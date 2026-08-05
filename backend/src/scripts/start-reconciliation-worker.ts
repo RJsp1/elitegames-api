@@ -1,26 +1,22 @@
 import { loadEnv, resetEnvCache } from '../config/env.js';
 import { logger } from '../utils/logger.js';
-import { sicrediReconciliationService } from '../services/sicredi/sicredi-reconciliation.service.js';
+import {
+  sicrediReconciliationService,
+  summarizeReconciliationResults,
+} from '../services/sicredi/sicredi-reconciliation.service.js';
 
 let shuttingDown = false;
 let timer: NodeJS.Timeout | null = null;
 
-async function runOnce(): Promise<void> {
+export async function runOnce(): Promise<void> {
+  const startedAt = Date.now();
   const results = await sicrediReconciliationService.runCycle();
   if (results === null) {
     return;
   }
 
-  const confirmed = results.filter((r) => r.action === 'confirmed').length;
-  const errors = results.filter((r) => r.action === 'error').length;
-  const mismatches = results.filter((r) => r.action === 'amount_mismatch').length;
-
-  logger.info('Ciclo de conciliação concluído', {
-    total: results.length,
-    confirmed,
-    errors,
-    mismatches,
-  });
+  const summary = summarizeReconciliationResults(results, Date.now() - startedAt);
+  logger.info('Ciclo de conciliação concluído', { ...summary });
 }
 
 /** Agenda o próximo ciclo. O timer mantém ref no event loop (não usar unref). */

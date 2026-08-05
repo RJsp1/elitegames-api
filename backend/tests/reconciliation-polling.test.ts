@@ -10,9 +10,11 @@ import { clearAuditLogMemoryStore } from '../src/repositories/audit-log.reposito
 import {
   classifySicrediCobStatus,
   sicrediReconciliationService,
+  summarizeReconciliationResults,
 } from '../src/services/sicredi/sicredi-reconciliation.service.js';
 import type { ProviderChargeStatus } from '../src/types/payment.types.js';
 import * as auditMod from '../src/repositories/audit-log.repository.js';
+import { sanitizeAuditError } from '../src/repositories/audit-log.repository.js';
 
 function remoteCob(partial: Partial<ProviderChargeStatus> & { sicrediStatus: string }): ProviderChargeStatus {
   return {
@@ -102,6 +104,7 @@ describe('Sicredi reconciliation polling', () => {
 
   it('CONCLUIDA confirma pagamento, charge e registration paid', async () => {
     const seeded = await seedActiveSicrediPayment();
+    const auditSpy = vi.spyOn(auditMod.auditLogRepository, 'write');
 
     vi.spyOn(
       await import('../src/services/sicredi/sicredi-charge.service.js').then(
@@ -122,6 +125,24 @@ describe('Sicredi reconciliation polling', () => {
     expect(result.action).toBe('confirmed');
     expect(result.currentStatus).toBe('paid');
 
+    expect(auditSpy).toHaveBeenCalledTimes(1);
+    expect(auditSpy.mock.calls[0]?.[0]).toMatchObject({
+      action: 'PAYMENT_RECONCILED',
+      entityType: 'payment',
+      entityId: seeded.paymentId,
+    });
+
+    const summary = summarizeReconciliationResults([result], 420);
+    expect(summary).toEqual({
+      total: 1,
+      confirmed: 1,
+      pending: 0,
+      cancelled: 0,
+      errors: 0,
+      mismatches: 0,
+      durationMs: 420,
+    });
+
     const payment = await paymentRepository.findPaymentById(seeded.paymentId);
     expect(payment?.status).toBe('paid');
     expect(payment?.paidAt).toBeTruthy();
@@ -132,10 +153,14 @@ describe('Sicredi reconciliation polling', () => {
 
     const registration = await paymentRepository.findRegistrationById(seeded.regId);
     expect(registration?.status).toBe('paid');
+
+    const stillQueued = await paymentRepository.listReconcilableSicrediPayments(50);
+    expect(stillQueued.find((p) => p.id === seeded.paymentId)).toBeUndefined();
   });
 
-  it('ATIVA permanece pendente/active sem alterar status local', async () => {
+  it('ATIVA permanece unchanged e não tenta auditoria PAYMENT_RECONCILED', async () => {
     const seeded = await seedActiveSicrediPayment({ status: 'pending' });
+    const auditSpy = vi.spyOn(auditMod.auditLogRepository, 'write');
 
     vi.spyOn(
       (await import('../src/services/sicredi/sicredi-charge.service.js')).sicrediChargeService,
@@ -152,6 +177,7 @@ describe('Sicredi reconciliation polling', () => {
     const result = await sicrediReconciliationService.reconcilePayment(seeded.paymentId);
     expect(result.action).toBe('unchanged');
     expect(result.currentStatus).toBe('pending');
+    expect(auditSpy).not.toHaveBeenCalled();
 
     const payment = await paymentRepository.findPaymentById(seeded.paymentId);
     expect(payment?.status).toBe('pending');
@@ -308,7 +334,20 @@ describe('Sicredi reconciliation polling', () => {
 
     const payment = await paymentRepository.findPaymentById(seeded.paymentId);
     expect(payment?.status).toBe('paid');
+    const charge = await paymentRepository.findCurrentChargeByPaymentId(seeded.paymentId);
+    expect(charge?.status).toBe('paid');
     const registration = await paymentRepository.findRegistrationById(seeded.regId);
     expect(registration?.status).toBe('paid');
+  });
+
+  it('sanitizeAuditError expõe código Postgres sem unknown_audit_error opaco', () => {
+    const sanitized = sanitizeAuditError({
+      message: 'null value in column "entity_table" of relation "audit_logs" violates not-null constraint',
+      code: '23502',
+      details: 'Failing row contains (...)',
+    });
+    expect(sanitized.code).toBe('23502');
+    expect(sanitized.message).toContain('entity_table');
+    expect(sanitized.message).not.toBe('unknown_audit_error');
   });
 });

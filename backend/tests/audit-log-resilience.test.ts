@@ -72,7 +72,18 @@ describe('audit_logs schema + payment resilience', () => {
 
   it('documenta apenas colunas reais de public.audit_logs', () => {
     expect([...getAuditLogsSchemaColumns()].sort()).toEqual(
-      ['action', 'actor_id', 'created_at', 'entity_id', 'id', 'ip'].sort(),
+      [
+        'action',
+        'actor_id',
+        'after',
+        'before',
+        'created_at',
+        'entity_id',
+        'entity_table',
+        'id',
+        'ip',
+        'reason',
+      ].sort(),
     );
     expect(getAuditLogsSchemaColumns()).not.toContain('actor');
     expect(getAuditLogsSchemaColumns()).not.toContain('entity_type');
