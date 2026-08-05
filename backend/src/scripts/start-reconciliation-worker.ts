@@ -23,7 +23,8 @@ async function runOnce(): Promise<void> {
   });
 }
 
-function scheduleNext(intervalMs: number): void {
+/** Agenda o próximo ciclo. O timer mantém ref no event loop (não usar unref). */
+export function scheduleNext(intervalMs: number): void {
   if (shuttingDown) return;
   timer = setTimeout(() => {
     void (async () => {
@@ -38,7 +39,18 @@ function scheduleNext(intervalMs: number): void {
       }
     })();
   }, intervalMs);
-  timer.unref?.();
+}
+
+export function getReconciliationWorkerTimer(): NodeJS.Timeout | null {
+  return timer;
+}
+
+export function resetReconciliationWorkerState(): void {
+  shuttingDown = false;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
 }
 
 function shutdown(signal: string): void {
