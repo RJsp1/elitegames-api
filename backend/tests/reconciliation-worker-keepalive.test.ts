@@ -1,21 +1,50 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import {
-  scheduleNext,
-  getReconciliationWorkerTimer,
-  resetReconciliationWorkerState,
-} from '../src/scripts/start-reconciliation-worker.js';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 
-describe('reconciliation worker keep-alive', () => {
+describe('reconciliation worker entrypoint / keep-alive', () => {
   afterEach(() => {
-    resetReconciliationWorkerState();
+    vi.restoreAllMocks();
+    vi.resetModules();
   });
 
-  it('mantém timer com ref ativo enquanto aguarda o próximo ciclo', () => {
-    scheduleNext(60_000);
+  it('importar o módulo de lógica não inicia o worker automaticamente', async () => {
+    const mod = await import('../src/scripts/start-reconciliation-worker.js');
 
-    const timer = getReconciliationWorkerTimer();
+    expect(mod.getReconciliationWorkerTimer()).toBeNull();
+    expect(typeof mod.runReconciliationWorker).toBe('function');
+    expect(typeof mod.scheduleNext).toBe('function');
+    expect(typeof mod.resetReconciliationWorkerState).toBe('function');
+  });
+
+  it('importar o entrypoint chama runReconciliationWorker (sem Sicredi real)', async () => {
+    const runMock = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock('../src/scripts/start-reconciliation-worker.js', async (importOriginal) => {
+      const actual = await importOriginal<
+        typeof import('../src/scripts/start-reconciliation-worker.js')
+      >();
+      return {
+        ...actual,
+        runReconciliationWorker: runMock,
+      };
+    });
+
+    await import('../src/scripts/start-reconciliation-worker-entrypoint.js');
+
+    await vi.waitFor(() => {
+      expect(runMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('mantém timer com ref ativo enquanto aguarda o próximo ciclo', async () => {
+    const mod = await import('../src/scripts/start-reconciliation-worker.js');
+    mod.resetReconciliationWorkerState();
+    mod.scheduleNext(60_000);
+
+    const timer = mod.getReconciliationWorkerTimer();
     expect(timer).not.toBeNull();
-    // Sem unref: o handle mantém o event loop vivo (evita exit + restart do PM2).
     expect(timer!.hasRef()).toBe(true);
+
+    mod.resetReconciliationWorkerState();
+    expect(mod.getReconciliationWorkerTimer()).toBeNull();
   });
 });

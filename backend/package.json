@@ -25,7 +25,7 @@
     "sicredi:create-persisted-payment": "tsx scripts/create-persisted-payment.ts",
     "supabase:test": "tsx scripts/test-supabase-connection.ts",
     "worker:reconciliation": "tsx scripts/start-reconciliation-worker.ts",
-    "worker:reconciliation:prod": "node dist/scripts/start-reconciliation-worker.js"
+    "worker:reconciliation:prod": "node dist/scripts/start-reconciliation-worker-entrypoint.js"
   },
   "keywords": [
     "pix",

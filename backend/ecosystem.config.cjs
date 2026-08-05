@@ -17,7 +17,7 @@ module.exports = {
     },
     {
       name: 'elitegames-reconciliation',
-      script: 'dist/scripts/start-reconciliation-worker.js',
+      script: 'dist/scripts/start-reconciliation-worker-entrypoint.js',
       instances: 1,
       exec_mode: 'fork',
       watch: false,

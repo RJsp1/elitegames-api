@@ -103,17 +103,3 @@ export async function runReconciliationWorker(): Promise<void> {
     scheduleNext(intervalMs);
   }
 }
-
-const isDirectRun =
-  typeof process.argv[1] === 'string' &&
-  (process.argv[1].endsWith('start-reconciliation-worker.ts') ||
-    process.argv[1].endsWith('start-reconciliation-worker.js'));
-
-if (isDirectRun) {
-  void runReconciliationWorker().catch((err) => {
-    logger.error('Worker de conciliação abortado', {
-      message: err instanceof Error ? err.message : 'unknown',
-    });
-    process.exitCode = 1;
-  });
-}
