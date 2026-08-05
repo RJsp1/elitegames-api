@@ -1,9 +1,14 @@
+import { getEnv } from '../../config/env.js';
 import { paymentRepository } from '../../repositories/payment.repository.js';
 import { auditLogRepository } from '../../repositories/audit-log.repository.js';
+import type { PaymentRecord, ProviderChargeStatus } from '../../types/payment.types.js';
+import { nowIso } from '../../utils/date.js';
 import { logger } from '../../utils/logger.js';
-import { sicrediChargeService } from './sicredi-charge.service.js';
-import type { PaymentRecord } from '../../types/payment.types.js';
+import { pixAmountToCents, toCents } from '../../utils/money.js';
 import { redactSensitiveData } from '../../utils/redact-sensitive-data.js';
+import { sicrediChargeService } from './sicredi-charge.service.js';
+
+export type SicrediCobClassification = 'paid' | 'active' | 'cancelled' | 'unknown';
 
 export interface ReconciliationResult {
   paymentId: string;
@@ -11,9 +16,101 @@ export interface ReconciliationResult {
   previousStatus: string;
   currentStatus: string;
   matched: boolean;
+  action:
+    | 'confirmed'
+    | 'unchanged'
+    | 'cancelled'
+    | 'amount_mismatch'
+    | 'skipped_unknown'
+    | 'idempotent'
+    | 'error';
+  message?: string;
+}
+
+/**
+ * Classifica o status bruto da cobrança Sicredi/Bacen para o polling.
+ */
+export function classifySicrediCobStatus(rawStatus: string | undefined | null): SicrediCobClassification {
+  const normalized = (rawStatus ?? '').trim().toUpperCase();
+
+  switch (normalized) {
+    case 'CONCLUIDA':
+    case 'CONCLUIDA_PIX':
+      return 'paid';
+    case 'ATIVA':
+    case 'ACTIVE':
+      return 'active';
+    case 'REMOVIDA_PELO_USUARIO_RECEBEDOR':
+    case 'REMOVIDA_PELO_PSP':
+      return 'cancelled';
+    default:
+      return 'unknown';
+  }
+}
+
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index]!);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return results;
+}
+
+function resolveReceivedAmount(remote: ProviderChargeStatus): string {
+  return remote.receivedAmount ?? remote.amountOriginal;
 }
 
 export class SicrediReconciliationService {
+  private cycleRunning = false;
+
+  isCycleRunning(): boolean {
+    return this.cycleRunning;
+  }
+
+  /** Uso em testes — libera trava de ciclo. */
+  resetCycleLock(): void {
+    this.cycleRunning = false;
+  }
+
+  /**
+   * Executa um ciclo com trava anti-sobreposição.
+   * Retorna null quando um ciclo já está em andamento.
+   */
+  async runCycle(options?: {
+    limit?: number;
+    concurrency?: number;
+  }): Promise<ReconciliationResult[] | null> {
+    if (this.cycleRunning) {
+      logger.warn('Ciclo de conciliação sobreposto bloqueado');
+      return null;
+    }
+
+    this.cycleRunning = true;
+    try {
+      const env = getEnv();
+      const limit = options?.limit ?? env.PAYMENT_RECONCILIATION_BATCH_SIZE;
+      const concurrency = options?.concurrency ?? env.PAYMENT_RECONCILIATION_CONCURRENCY;
+      return await this.reconcilePending(limit, concurrency);
+    } finally {
+      this.cycleRunning = false;
+    }
+  }
+
   async reconcilePayment(paymentId: string): Promise<ReconciliationResult> {
     const payment = await paymentRepository.findPaymentById(paymentId);
     if (!payment) {
@@ -23,34 +120,242 @@ export class SicrediReconciliationService {
       throw new Error('Pagamento sem txid');
     }
 
-    const remote = await sicrediChargeService.getCharge(payment.txid);
-    const previousStatus = payment.status;
+    if (payment.status === 'paid') {
+      return {
+        paymentId: payment.id,
+        txid: payment.txid,
+        previousStatus: 'paid',
+        currentStatus: 'paid',
+        matched: true,
+        action: 'idempotent',
+        message: 'Pagamento já liquidado',
+      };
+    }
 
-    const updated = await paymentRepository.updatePaymentStatus(payment.id, remote.status, {
-      endToEndId: remote.endToEndId ?? payment.endToEndId,
-      paidAt: remote.paidAt ?? payment.paidAt,
-    });
+    const remote = await sicrediChargeService.getCharge(payment.txid);
+    return this.applyRemoteStatus(payment, remote);
+  }
+
+  async applyRemoteStatus(
+    payment: PaymentRecord,
+    remote: ProviderChargeStatus,
+  ): Promise<ReconciliationResult> {
+    const previousStatus = payment.status;
+    const classification = classifySicrediCobStatus(remote.sicrediStatus ?? remote.status);
+
+    if (classification === 'unknown') {
+      logger.warn('Status Sicredi não mapeado na conciliação', {
+        paymentId: payment.id,
+        txid: payment.txid ?? undefined,
+        sicrediStatus: remote.sicrediStatus ?? remote.status,
+      });
+      return {
+        paymentId: payment.id,
+        txid: payment.txid ?? '',
+        previousStatus,
+        currentStatus: previousStatus,
+        matched: false,
+        action: 'skipped_unknown',
+        message: `Status remoto não tratado: ${remote.sicrediStatus ?? remote.status}`,
+      };
+    }
+
+    if (classification === 'active') {
+      // ATIVA: manter pending/active local sem forçar transição.
+      await this.writeAuditSafe(payment.id, previousStatus, previousStatus, true);
+      return {
+        paymentId: payment.id,
+        txid: payment.txid ?? '',
+        previousStatus,
+        currentStatus: previousStatus,
+        matched: true,
+        action: 'unchanged',
+      };
+    }
+
+    if (classification === 'cancelled') {
+      const updated = await paymentRepository.updatePaymentStatus(payment.id, 'cancelled');
+      const charge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
+      if (charge) {
+        await paymentRepository.updateChargeStatus(charge.id, 'cancelled', {
+          rawResponse: (redactSensitiveData(remote.raw ?? {}) as Record<string, unknown>) ?? null,
+        });
+      }
+      await this.writeAuditSafe(payment.id, previousStatus, updated.status, true);
+      logger.info('Pagamento cancelado via conciliação', {
+        paymentId: payment.id,
+        txid: payment.txid ?? undefined,
+      });
+      return {
+        paymentId: payment.id,
+        txid: payment.txid ?? '',
+        previousStatus,
+        currentStatus: updated.status,
+        matched: true,
+        action: 'cancelled',
+      };
+    }
+
+    // CONCLUIDA → paid (com checagem de valor em centavos)
+    const received = resolveReceivedAmount(remote);
+    let expectedCents: number;
+    let receivedCents: number;
+    try {
+      expectedCents = toCents(Number(payment.totalAmount));
+      receivedCents = pixAmountToCents(received);
+    } catch (err) {
+      logger.warn('Falha ao comparar valores na conciliação', {
+        paymentId: payment.id,
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+      return {
+        paymentId: payment.id,
+        txid: payment.txid ?? '',
+        previousStatus,
+        currentStatus: previousStatus,
+        matched: false,
+        action: 'amount_mismatch',
+        message: 'Valor remoto inválido',
+      };
+    }
+
+    if (expectedCents !== receivedCents) {
+      logger.warn('Divergência de valor na conciliação — pagamento não confirmado', {
+        paymentId: payment.id,
+        txid: payment.txid ?? undefined,
+        expectedCents,
+        receivedCents,
+      });
+      return {
+        paymentId: payment.id,
+        txid: payment.txid ?? '',
+        previousStatus,
+        currentStatus: previousStatus,
+        matched: false,
+        action: 'amount_mismatch',
+        message: `Valor divergente: esperado ${expectedCents} centavos, recebido ${receivedCents}`,
+      };
+    }
 
     const charge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
-    if (charge) {
-      await paymentRepository.updateChargeStatus(charge.id, remote.status, {
-        rawResponse: (redactSensitiveData(remote.raw ?? {}) as Record<string, unknown>) ?? null,
+    const paidAt = remote.paidAt ?? nowIso();
+    const endToEndId =
+      remote.endToEndId ?? payment.endToEndId ?? `RECON${payment.id.replace(/-/g, '').slice(0, 28)}`;
+
+    if (charge && payment.registrationId) {
+      const event = await paymentRepository.createPaymentEvent({
+        paymentId: payment.id,
+        providerId: payment.providerId,
+        eventType: 'payment_reconciled_paid',
+        externalEventId: `recon:${endToEndId}`,
+        payload: redactSensitiveData(remote.raw ?? remote),
+        processed: false,
       });
+
+      try {
+        await paymentRepository.confirmPaidAtomically({
+          paymentId: payment.id,
+          chargeId: charge.id,
+          registrationId: payment.registrationId,
+          endToEndId,
+          paidAt,
+          eventId: event.id,
+          chargeRawResponse:
+            (redactSensitiveData(remote.raw ?? {}) as Record<string, unknown>) ?? undefined,
+        });
+      } catch (err) {
+        // Idempotência: evento duplicado ou já liquidado concorrentemente.
+        const refreshed = await paymentRepository.findPaymentById(payment.id);
+        if (refreshed?.status === 'paid') {
+          await this.writeAuditSafe(payment.id, previousStatus, 'paid', true);
+          return {
+            paymentId: payment.id,
+            txid: payment.txid ?? '',
+            previousStatus,
+            currentStatus: 'paid',
+            matched: true,
+            action: 'idempotent',
+            message: err instanceof Error ? err.message : 'already_paid',
+          };
+        }
+        throw err;
+      }
+    } else {
+      await paymentRepository.updatePaymentStatus(payment.id, 'paid', {
+        endToEndId,
+        paidAt,
+      });
+      if (charge) {
+        await paymentRepository.updateChargeStatus(charge.id, 'paid', {
+          rawResponse: (redactSensitiveData(remote.raw ?? {}) as Record<string, unknown>) ?? null,
+        });
+      }
+      if (payment.registrationId) {
+        await paymentRepository.confirmRegistration(payment.registrationId);
+        await paymentRepository.confirmReservation(payment.id, payment.registrationId);
+      }
     }
 
-    if (updated.status === 'paid' && payment.registrationId && charge) {
-      await paymentRepository.confirmRegistration(payment.registrationId);
-      await paymentRepository.confirmReservation(payment.id, payment.registrationId);
-    }
+    await this.writeAuditSafe(payment.id, previousStatus, 'paid', true);
 
-    const matched = previousStatus === updated.status || remote.status === 'paid';
+    logger.info('Pagamento confirmado via conciliação', {
+      paymentId: payment.id,
+      txid: payment.txid ?? undefined,
+      previousStatus,
+      currentStatus: 'paid',
+    });
 
+    return {
+      paymentId: payment.id,
+      txid: payment.txid ?? '',
+      previousStatus,
+      currentStatus: 'paid',
+      matched: true,
+      action: 'confirmed',
+    };
+  }
+
+  async reconcilePending(
+    limit = 50,
+    concurrency = 5,
+  ): Promise<ReconciliationResult[]> {
+    const pending = await paymentRepository.listReconcilableSicrediPayments(limit);
+
+    const results = await mapWithConcurrency(pending, concurrency, async (payment) => {
+      try {
+        return await this.reconcilePayment(payment.id);
+      } catch (err) {
+        logger.warn('Falha ao conciliar pagamento', {
+          paymentId: payment.id,
+          message: err instanceof Error ? err.message.slice(0, 300) : 'unknown',
+        });
+        return {
+          paymentId: payment.id,
+          txid: payment.txid ?? '',
+          previousStatus: payment.status,
+          currentStatus: payment.status,
+          matched: false,
+          action: 'error' as const,
+          message: err instanceof Error ? err.message : 'unknown',
+        };
+      }
+    });
+
+    return results;
+  }
+
+  private async writeAuditSafe(
+    paymentId: string,
+    previousStatus: string,
+    currentStatus: string,
+    matched: boolean,
+  ): Promise<void> {
     try {
       await auditLogRepository.write({
         action: 'PAYMENT_RECONCILED',
         entityType: 'payment',
-        entityId: payment.id,
-        metadata: { previousStatus, currentStatus: updated.status, matched },
+        entityId: paymentId,
+        metadata: { previousStatus, currentStatus, matched },
       });
     } catch (auditError) {
       logger.warn('Falha ao gravar audit log', {
@@ -58,44 +363,9 @@ export class SicrediReconciliationService {
           auditError instanceof Error
             ? auditError.message.slice(0, 300)
             : 'unknown_audit_error',
-        paymentId: payment.id,
+        paymentId,
       });
     }
-
-    logger.info('Conciliação concluída', {
-      paymentId: payment.id,
-      txid: payment.txid ?? undefined,
-      previousStatus,
-      currentStatus: updated.status,
-    });
-
-    return {
-      paymentId: payment.id,
-      txid: payment.txid ?? '',
-      previousStatus,
-      currentStatus: updated.status,
-      matched,
-    };
-  }
-
-  async reconcilePending(limit = 50): Promise<ReconciliationResult[]> {
-    const pending = await paymentRepository.listPayments(limit);
-    const toReconcile = pending.filter(
-      (p: PaymentRecord) => p.status === 'pending' || p.status === 'active',
-    );
-
-    const results: ReconciliationResult[] = [];
-    for (const payment of toReconcile) {
-      try {
-        results.push(await this.reconcilePayment(payment.id));
-      } catch (err) {
-        logger.warn('Falha ao conciliar pagamento', {
-          paymentId: payment.id,
-          message: err instanceof Error ? err.message : 'unknown',
-        });
-      }
-    }
-    return results;
   }
 }
 

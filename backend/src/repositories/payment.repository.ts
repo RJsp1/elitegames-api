@@ -1079,6 +1079,44 @@ export class PaymentRepository {
     return (data ?? []).map((row) => mapPayment(row as Record<string, unknown>));
   }
 
+  /**
+   * Pagamentos Sicredi elegíveis à conciliação por polling:
+   * pending/active, com txid, provider sicredi ativo.
+   */
+  async listReconcilableSicrediPayments(limit = 50): Promise<PaymentRecord[]> {
+    const sicredi = await this.findProviderByCode('sicredi');
+    if (!sicredi) return [];
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return Array.from(payments.values())
+        .filter(
+          (p) =>
+            p.providerId === sicredi.id &&
+            (p.status === 'pending' || p.status === 'active') &&
+            typeof p.txid === 'string' &&
+            p.txid.trim().length > 0,
+        )
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .slice(0, limit);
+    }
+
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('provider_id', sicredi.id)
+      .in('status', ['pending', 'active'])
+      .not('txid', 'is', null)
+      .order('created_at', { ascending: true })
+      .limit(limit);
+
+    if (error) throw AppError.internal(error.message);
+
+    return (data ?? [])
+      .map((row) => mapPayment(row as Record<string, unknown>))
+      .filter((p) => typeof p.txid === 'string' && p.txid.trim().length > 0);
+  }
+
   async findExpiredActivePayments(reference = new Date()): Promise<PaymentRecord[]> {
     const iso = reference.toISOString();
     const supabase = getSupabase();

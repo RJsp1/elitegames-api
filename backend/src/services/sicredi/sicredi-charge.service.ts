@@ -165,8 +165,10 @@ export class SicrediChargeService {
     return {
       txid: data.txid || txid,
       status: mapSicrediStatus(data.status),
+      sicrediStatus: data.status,
       pixCopiaECola: data.pixCopiaECola,
       amountOriginal: data.valor.original,
+      receivedAmount: pix?.valor ?? data.valor.original,
       endToEndId: pix?.endToEndId,
       paidAt: pix?.horario,
       raw: redactSensitiveData(data),

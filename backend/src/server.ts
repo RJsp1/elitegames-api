@@ -16,9 +16,7 @@ const server = app.listen(env.PORT, () => {
   });
 
   startExpirePaymentsJob();
-  if (env.isSicredi) {
-    startReconcilePaymentsJob();
-  }
+  startReconcilePaymentsJob();
 });
 
 function shutdown(signal: string): void {

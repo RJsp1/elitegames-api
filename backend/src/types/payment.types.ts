@@ -185,8 +185,12 @@ export interface ProviderChargeResult {
 export interface ProviderChargeStatus {
   txid: string;
   status: PaymentStatusV2;
+  /** Status bruto retornado pela API Pix (ex.: CONCLUIDA, ATIVA). */
+  sicrediStatus?: string;
   pixCopiaECola?: string;
   amountOriginal: string;
+  /** Valor liquidado no pix[] quando houver; senão valor.original da cobrança. */
+  receivedAmount?: string;
   endToEndId?: string;
   paidAt?: string;
   raw?: unknown;

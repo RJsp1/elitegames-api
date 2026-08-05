@@ -1,22 +1,28 @@
 import { getEnv } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 
-const INTERVAL_MS = 5 * 60_000;
 let timer: NodeJS.Timeout | null = null;
 
+/**
+ * Job embutido no processo da API (opcional).
+ * Em produção preferir o worker PM2 dedicado (PAYMENT_RECONCILIATION_ENABLED).
+ */
 export function startReconcilePaymentsJob(): void {
   const env = getEnv();
   if (!env.isSicredi) return;
+  if (!env.PAYMENT_RECONCILIATION_ENABLED) return;
   if (timer) return;
 
-  timer = setInterval(() => {
+  const intervalMs = env.PAYMENT_RECONCILIATION_INTERVAL_MS;
+
+  const tick = (): void => {
     void (async () => {
       try {
         const { sicrediReconciliationService } = await import(
           '../services/sicredi/sicredi-reconciliation.service.js'
         );
-        const results = await sicrediReconciliationService.reconcilePending(20);
-        if (results.length > 0) {
+        const results = await sicrediReconciliationService.runCycle();
+        if (results && results.length > 0) {
           logger.info('Job de conciliação executado', { count: results.length });
         }
       } catch (err) {
@@ -25,9 +31,13 @@ export function startReconcilePaymentsJob(): void {
         });
       }
     })();
-  }, INTERVAL_MS);
+  };
 
+  // Não executa imediatamente no boot da API — o worker dedicado faz isso.
+  timer = setInterval(tick, intervalMs);
   timer.unref?.();
+
+  logger.info('Job de conciliação agendado na API', { intervalMs });
 }
 
 export function stopReconcilePaymentsJob(): void {
