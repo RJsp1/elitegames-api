@@ -1245,6 +1245,122 @@ export class PaymentRepository {
   getExpireRegistrationMode(): ExpireRegistrationMode {
     return expireRegistrationMode;
   }
+
+  async findProviderById(providerId: string): Promise<PaymentProviderRecord | null> {
+    const supabase = getSupabase();
+    if (!supabase) return providers.get(providerId) ?? null;
+    const { data, error } = await supabase
+      .from('payment_providers')
+      .select('*')
+      .eq('id', providerId)
+      .maybeSingle();
+    if (error) throw AppError.internal(error.message);
+    if (!data) return null;
+    const row = data as Record<string, unknown>;
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      code: String(row.code),
+      environment: (row.environment as string) ?? null,
+      isActive: Boolean(row.is_active),
+      isDefault: Boolean(row.is_default),
+      supportsDynamicCharge: Boolean(row.supports_dynamic_charge),
+      supportsWebhook: Boolean(row.supports_webhook),
+      defaultExpirationSeconds:
+        row.default_expiration_seconds != null
+          ? Number(row.default_expiration_seconds)
+          : null,
+    };
+  }
+
+  async findAthleteById(athleteId: string): Promise<AthleteRecord | null> {
+    const supabase = getSupabase();
+    if (!supabase) return athletes.get(athleteId) ?? null;
+    const { data, error } = await supabase
+      .from('athletes')
+      .select('id, full_name, cpf')
+      .eq('id', athleteId)
+      .maybeSingle();
+    if (error) throw AppError.internal(error.message);
+    if (!data) return null;
+    return {
+      id: String(data.id),
+      fullName: String(data.full_name ?? ''),
+      cpf: String(data.cpf ?? ''),
+    };
+  }
+
+  /** Lista completa em memória / amostra ampla no Supabase para agregações admin. */
+  async listAllPaymentsForAdmin(limit = 5000): Promise<PaymentRecord[]> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return Array.from(payments.values()).sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      );
+    }
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw AppError.internal(error.message);
+    return (data ?? []).map((row) => mapPayment(row as Record<string, unknown>));
+  }
+
+  async countChargesByPaymentIds(
+    paymentIds: string[],
+  ): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (paymentIds.length === 0) return result;
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      for (const c of charges.values()) {
+        result.set(c.paymentId, (result.get(c.paymentId) ?? 0) + 1);
+      }
+      return result;
+    }
+
+    const { data, error } = await supabase
+      .from('payment_charges')
+      .select('payment_id')
+      .in('payment_id', paymentIds);
+    if (error) throw AppError.internal(error.message);
+    for (const row of data ?? []) {
+      const pid = String((row as { payment_id: string }).payment_id);
+      result.set(pid, (result.get(pid) ?? 0) + 1);
+    }
+    return result;
+  }
+
+  async listCurrentChargesByPaymentIds(
+    paymentIds: string[],
+  ): Promise<Map<string, PaymentChargeRecord>> {
+    const result = new Map<string, PaymentChargeRecord>();
+    if (paymentIds.length === 0) return result;
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      for (const c of charges.values()) {
+        if (c.isCurrent && paymentIds.includes(c.paymentId)) {
+          result.set(c.paymentId, c);
+        }
+      }
+      return result;
+    }
+
+    const { data, error } = await supabase
+      .from('payment_charges')
+      .select('*')
+      .in('payment_id', paymentIds)
+      .eq('is_current', true);
+    if (error) throw AppError.internal(error.message);
+    for (const row of data ?? []) {
+      const charge = mapCharge(row as Record<string, unknown>);
+      result.set(charge.paymentId, charge);
+    }
+    return result;
+  }
 }
 
 export const paymentRepository = new PaymentRepository();

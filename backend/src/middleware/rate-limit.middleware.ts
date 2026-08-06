@@ -32,3 +32,16 @@ export const webhookRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+export const adminRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMIT',
+      message: 'Limite de requisições administrativas excedido.',
+    },
+  },
+});

@@ -425,28 +425,71 @@ export class AuditLogRepository {
   }
 
   async list(limit = 50): Promise<AuditLogRecord[]> {
+    const result = await this.listFiltered({ page: 1, pageSize: limit });
+    return result.items;
+  }
+
+  async listFiltered(input: {
+    action?: string;
+    entityIds?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<{ items: AuditLogRecord[]; total: number }> {
+    const page = input.page ?? 1;
+    const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 50));
+    const offset = (page - 1) * pageSize;
+
+    const matches = (row: AuditLogRecord): boolean => {
+      if (input.action && row.action !== input.action) return false;
+      if (input.entityIds && input.entityIds.length > 0) {
+        if (!row.entityId || !input.entityIds.includes(row.entityId)) return false;
+      }
+      if (input.dateFrom && row.createdAt < input.dateFrom) return false;
+      if (input.dateTo && row.createdAt > input.dateTo) return false;
+      return true;
+    };
+
     const supabase = getSupabase();
     if (!supabase) {
-      return [...memoryStore].reverse().slice(0, limit);
+      const filtered = [...memoryStore].filter(matches).sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      );
+      return {
+        items: filtered.slice(offset, offset + pageSize),
+        total: filtered.length,
+      };
     }
 
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('audit_logs')
-        .select('id, action, entity_table, entity_id, actor_id, created_at, ip, before, after, reason')
+        .select(
+          'id, action, entity_table, entity_id, actor_id, created_at, ip, before, after, reason',
+          { count: 'exact' },
+        )
         .order('created_at', { ascending: false })
-        .limit(limit);
+        .range(offset, offset + pageSize - 1);
 
+      if (input.action) query = query.eq('action', input.action);
+      if (input.entityIds && input.entityIds.length > 0) {
+        query = query.in('entity_id', input.entityIds);
+      }
+      if (input.dateFrom) query = query.gte('created_at', input.dateFrom);
+      if (input.dateTo) query = query.lte('created_at', input.dateTo);
+
+      const { data, error, count } = await query;
       if (error) {
         const sanitized = sanitizeAuditError(error);
-        logger.warn('Falha ao listar audit logs', {
+        logger.warn('Falha ao listar audit logs filtrados', {
           message: sanitized.message,
           code: sanitized.code,
         });
-        return [];
+        return { items: [], total: 0 };
       }
 
-      return (data ?? []).map((row) => ({
+      const items = (data ?? []).map((row) => ({
         id: String(row.id),
         action: String(row.action),
         entityType: String(row.entity_table ?? ''),
@@ -464,14 +507,27 @@ export class AuditLogRepository {
         before: row.before ?? null,
         after: row.after ?? null,
       }));
+
+      return { items, total: count ?? items.length };
     } catch (error) {
       const sanitized = sanitizeAuditError(error);
-      logger.warn('Falha ao listar audit logs', {
+      logger.warn('Falha ao listar audit logs filtrados', {
         message: sanitized.message,
         code: sanitized.code,
       });
-      return [];
+      return { items: [], total: 0 };
     }
+  }
+
+  async countByAction(action: string, dateFrom?: string, dateTo?: string): Promise<number> {
+    const result = await this.listFiltered({
+      action,
+      dateFrom,
+      dateTo,
+      page: 1,
+      pageSize: 1,
+    });
+    return result.total;
   }
 }
 

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Elite Games — Admin Pix</title>
+  <link rel="stylesheet" href="./payments.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="brand">Elite Games</p>
+      <h1>Painel Pix Sicredi</h1>
+    </div>
+    <div class="auth-box">
+      <label for="apiKey">API Key interna</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="INTERNAL_API_KEY" />
+      <button id="btnSaveKey" type="button">Salvar</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="cards" id="summaryCards" aria-live="polite"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Worker de reconciliação</h2>
+        <span id="workerBadge" class="badge">—</span>
+      </div>
+      <div id="workerMeta" class="muted"></div>
+    </section>
+
+    <section class="panel charts">
+      <div>
+        <h2>Pagamentos por dia</h2>
+        <canvas id="chartByDay" height="140"></canvas>
+      </div>
+      <div>
+        <h2>Distribuição de status</h2>
+        <canvas id="chartByStatus" height="140"></canvas>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Pagamentos</h2>
+        <button id="btnRefresh" type="button">Atualizar</button>
+      </div>
+      <form id="filters" class="filters">
+        <input name="status" placeholder="status (ex: active,paid)" />
+        <input name="txid" placeholder="txid" />
+        <input name="registrationId" placeholder="registrationId" />
+        <input name="dateFrom" type="date" />
+        <input name="dateTo" type="date" />
+        <select name="pageSize">
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+        <button type="submit">Filtrar</button>
+      </form>
+      <div id="listState" class="muted">Carregando…</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Criado</th>
+              <th>Status</th>
+              <th>Valor</th>
+              <th>Inscrição</th>
+              <th>Atleta</th>
+              <th>Txid</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="paymentsBody"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="btnPrev" type="button">Anterior</button>
+        <span id="pageInfo">—</span>
+        <button id="btnNext" type="button">Próxima</button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detailModal">
+    <form method="dialog" class="modal-head">
+      <h2>Detalhe do pagamento</h2>
+      <button value="close" type="submit">Fechar</button>
+    </form>
+    <div id="detailBody" class="detail-body"></div>
+    <div class="actions">
+      <button type="button" data-action="reissue">Reemitir</button>
+      <button type="button" data-action="reconcile">Reconciliar</button>
+      <button type="button" data-action="expire" class="danger">Expirar</button>
+      <button type="button" data-action="cancel" class="danger">Cancelar</button>
+    </div>
+  </dialog>
+
+  <script src="./payments.js"></script>
+</body>
+</html>
