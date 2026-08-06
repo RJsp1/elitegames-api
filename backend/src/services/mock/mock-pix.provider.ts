@@ -42,6 +42,10 @@ export class MockPixProvider implements PaymentProvider {
     debtorCpf: string;
     registrationNumber: string;
     categoryName?: string;
+    solicitacaoPagador?: string;
+    correlationId?: string;
+    paymentId?: string;
+    registrationId?: string;
   }): Promise<ProviderChargeResult> {
     assertValidTxid(input.txid);
     if (!input.debtorCpf || !input.debtorName) {

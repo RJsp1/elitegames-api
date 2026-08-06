@@ -3,6 +3,7 @@ dist/
 coverage/
 logs/
 *.log
+runtime/
 
 .env
 .env.*

@@ -144,6 +144,12 @@ describe('Sicredi reconciliation polling', () => {
       errors: 0,
       mismatches: 0,
       durationMs: 420,
+      queried: 0,
+      skipped: 0,
+      tokenRefreshes: 0,
+      averageQueryMs: null,
+      maxQueryMs: null,
+      minQueryMs: null,
     });
 
     const payment = await paymentRepository.findPaymentById(seeded.paymentId);

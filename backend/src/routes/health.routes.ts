@@ -8,4 +8,8 @@ router.get('/', asyncHandler(async (req, res) => {
   healthController.check(req, res);
 }));
 
+router.get('/reconciliation', asyncHandler(async (req, res) => {
+  healthController.reconciliation(req, res);
+}));
+
 export default router;

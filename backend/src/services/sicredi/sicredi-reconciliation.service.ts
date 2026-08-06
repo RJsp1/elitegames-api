@@ -6,7 +6,13 @@ import { nowIso } from '../../utils/date.js';
 import { logger } from '../../utils/logger.js';
 import { pixAmountToCents, toCents } from '../../utils/money.js';
 import { redactSensitiveData } from '../../utils/redact-sensitive-data.js';
+import {
+  classifyPixError,
+  paymentCorrelationId,
+  pixLog,
+} from '../../utils/observability.js';
 import { sicrediChargeService } from './sicredi-charge.service.js';
+import { sicrediTokenCache } from './sicredi-token-cache.js';
 
 export type SicrediCobClassification = 'paid' | 'active' | 'cancelled' | 'unknown';
 
@@ -27,6 +33,14 @@ export interface ReconciliationResult {
   matched: boolean;
   action: ReconciliationAction;
   message?: string;
+  queryDurationMs?: number;
+}
+
+export interface ReconciliationCycleMetrics {
+  queried: number;
+  skipped: number;
+  tokenRefreshes: number;
+  queryDurationsMs: number[];
 }
 
 export interface ReconciliationCycleSummary {
@@ -37,6 +51,12 @@ export interface ReconciliationCycleSummary {
   errors: number;
   mismatches: number;
   durationMs: number;
+  queried: number;
+  skipped: number;
+  tokenRefreshes: number;
+  averageQueryMs: number | null;
+  maxQueryMs: number | null;
+  minQueryMs: number | null;
 }
 
 export function classifySicrediCobStatus(rawStatus: string | undefined | null): SicrediCobClassification {
@@ -60,7 +80,19 @@ export function classifySicrediCobStatus(rawStatus: string | undefined | null): 
 export function summarizeReconciliationResults(
   results: ReconciliationResult[],
   durationMs: number,
+  metrics?: Partial<ReconciliationCycleMetrics>,
 ): ReconciliationCycleSummary {
+  const queryDurationsMs = metrics?.queryDurationsMs ?? [];
+  const queried = metrics?.queried ?? queryDurationsMs.length;
+  const skipped =
+    metrics?.skipped ??
+    results.filter(
+      (r) =>
+        r.action === 'unchanged' ||
+        r.action === 'idempotent' ||
+        r.action === 'skipped_unknown',
+    ).length;
+
   return {
     total: results.length,
     confirmed: results.filter((r) => r.action === 'confirmed').length,
@@ -69,6 +101,17 @@ export function summarizeReconciliationResults(
     errors: results.filter((r) => r.action === 'error').length,
     mismatches: results.filter((r) => r.action === 'amount_mismatch').length,
     durationMs,
+    queried,
+    skipped,
+    tokenRefreshes: metrics?.tokenRefreshes ?? 0,
+    averageQueryMs:
+      queryDurationsMs.length > 0
+        ? Math.round(
+            queryDurationsMs.reduce((sum, value) => sum + value, 0) / queryDurationsMs.length,
+          )
+        : null,
+    maxQueryMs: queryDurationsMs.length > 0 ? Math.max(...queryDurationsMs) : null,
+    minQueryMs: queryDurationsMs.length > 0 ? Math.min(...queryDurationsMs) : null,
   };
 }
 
@@ -140,6 +183,12 @@ async function auditPaidConfirmation(input: {
 
 export class SicrediReconciliationService {
   private cycleRunning = false;
+  private lastCycleMetrics: ReconciliationCycleMetrics = {
+    queried: 0,
+    skipped: 0,
+    tokenRefreshes: 0,
+    queryDurationsMs: [],
+  };
 
   isCycleRunning(): boolean {
     return this.cycleRunning;
@@ -147,6 +196,10 @@ export class SicrediReconciliationService {
 
   resetCycleLock(): void {
     this.cycleRunning = false;
+  }
+
+  getLastCycleMetrics(): ReconciliationCycleMetrics {
+    return { ...this.lastCycleMetrics, queryDurationsMs: [...this.lastCycleMetrics.queryDurationsMs] };
   }
 
   async runCycle(options?: {
@@ -159,17 +212,34 @@ export class SicrediReconciliationService {
     }
 
     this.cycleRunning = true;
+    const tokenBefore = sicrediTokenCache.getRefreshCount();
+    const queryDurationsMs: number[] = [];
     try {
       const env = getEnv();
       const limit = options?.limit ?? env.PAYMENT_RECONCILIATION_BATCH_SIZE;
       const concurrency = options?.concurrency ?? env.PAYMENT_RECONCILIATION_CONCURRENCY;
-      return await this.reconcilePending(limit, concurrency);
+      const results = await this.reconcilePending(limit, concurrency, queryDurationsMs);
+      this.lastCycleMetrics = {
+        queried: queryDurationsMs.length,
+        skipped: results.filter(
+          (r) =>
+            r.action === 'unchanged' ||
+            r.action === 'idempotent' ||
+            r.action === 'skipped_unknown',
+        ).length,
+        tokenRefreshes: Math.max(0, sicrediTokenCache.getRefreshCount() - tokenBefore),
+        queryDurationsMs,
+      };
+      return results;
     } finally {
       this.cycleRunning = false;
     }
   }
 
-  async reconcilePayment(paymentId: string): Promise<ReconciliationResult> {
+  async reconcilePayment(
+    paymentId: string,
+    queryDurationsMs?: number[],
+  ): Promise<ReconciliationResult> {
     const payment = await paymentRepository.findPaymentById(paymentId);
     if (!payment) {
       throw new Error('Pagamento não encontrado');
@@ -177,6 +247,8 @@ export class SicrediReconciliationService {
     if (!payment.txid) {
       throw new Error('Pagamento sem txid');
     }
+
+    const correlationId = paymentCorrelationId(payment.id);
 
     if (payment.status === 'paid') {
       return {
@@ -190,24 +262,41 @@ export class SicrediReconciliationService {
       };
     }
 
-    const remote = await sicrediChargeService.getCharge(payment.txid);
-    return this.applyRemoteStatus(payment, remote);
+    const remote = await sicrediChargeService.getCharge(payment.txid, {
+      correlationId,
+      paymentId: payment.id,
+      attempt: 1,
+    });
+    if (typeof remote.queryDurationMs === 'number') {
+      queryDurationsMs?.push(remote.queryDurationMs);
+    }
+
+    return this.applyRemoteStatus(payment, remote, remote.queryDurationMs);
   }
 
   async applyRemoteStatus(
     payment: PaymentRecord,
     remote: ProviderChargeStatus,
+    queryDurationMs?: number,
   ): Promise<ReconciliationResult> {
     const previousStatus = payment.status;
+    const correlationId = paymentCorrelationId(payment.id);
     const chargeBefore = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
     const previousChargeStatus = chargeBefore?.status ?? null;
     const classification = classifySicrediCobStatus(remote.sicrediStatus ?? remote.status);
 
     if (classification === 'unknown') {
-      logger.warn('Status Sicredi não mapeado na conciliação', {
+      pixLog('warn', 'Status Sicredi não mapeado na conciliação', {
+        correlationId,
         paymentId: payment.id,
-        txid: payment.txid ?? undefined,
-        sicrediStatus: remote.sicrediStatus ?? remote.status,
+        registrationId: payment.registrationId,
+        txid: payment.txid,
+        provider: 'sicredi',
+        operation: 'reconciliation_payment',
+        statusLocal: previousStatus,
+        statusRemote: remote.sicrediStatus ?? remote.status,
+        attempt: 1,
+        durationMs: queryDurationMs,
       });
       return {
         paymentId: payment.id,
@@ -217,10 +306,23 @@ export class SicrediReconciliationService {
         matched: false,
         action: 'skipped_unknown',
         message: `Status remoto não tratado: ${remote.sicrediStatus ?? remote.status}`,
+        queryDurationMs,
       };
     }
 
     if (classification === 'active') {
+      pixLog('debug', 'Cobrança Sicredi ainda ATIVA', {
+        correlationId,
+        paymentId: payment.id,
+        registrationId: payment.registrationId,
+        txid: payment.txid,
+        provider: 'sicredi',
+        operation: 'reconciliation_payment',
+        statusLocal: previousStatus,
+        statusRemote: remote.sicrediStatus ?? 'ATIVA',
+        attempt: 1,
+        durationMs: queryDurationMs,
+      });
       return {
         paymentId: payment.id,
         txid: payment.txid ?? '',
@@ -228,6 +330,7 @@ export class SicrediReconciliationService {
         currentStatus: previousStatus,
         matched: true,
         action: 'unchanged',
+        queryDurationMs,
       };
     }
 
@@ -251,9 +354,18 @@ export class SicrediReconciliationService {
         newStatus: updated.status,
         reason: 'polling_sicredi',
       });
-      logger.info('Pagamento cancelado via conciliação', {
+      pixLog('warn', 'Pagamento cancelado via conciliação', {
+        correlationId,
         paymentId: payment.id,
-        txid: payment.txid ?? undefined,
+        registrationId: payment.registrationId,
+        chargeId: charge?.id,
+        txid: payment.txid,
+        provider: 'sicredi',
+        operation: 'reconciliation_payment',
+        statusLocal: updated.status,
+        statusRemote: remote.sicrediStatus,
+        attempt: 1,
+        durationMs: queryDurationMs,
       });
       return {
         paymentId: payment.id,
@@ -262,6 +374,7 @@ export class SicrediReconciliationService {
         currentStatus: updated.status,
         matched: true,
         action: 'cancelled',
+        queryDurationMs,
       };
     }
 
@@ -272,9 +385,16 @@ export class SicrediReconciliationService {
       expectedCents = toCents(Number(payment.totalAmount));
       receivedCents = pixAmountToCents(received);
     } catch (err) {
-      logger.warn('Falha ao comparar valores na conciliação', {
+      pixLog('warn', 'Falha ao comparar valores na conciliação', {
+        correlationId,
         paymentId: payment.id,
-        message: err instanceof Error ? err.message : 'unknown',
+        txid: payment.txid,
+        provider: 'sicredi',
+        operation: 'reconciliation_payment',
+        statusLocal: previousStatus,
+        errorCode: 'amount_mismatch',
+        errorMessage: err instanceof Error ? err.message : 'unknown',
+        attempt: 1,
       });
       return {
         paymentId: payment.id,
@@ -284,13 +404,23 @@ export class SicrediReconciliationService {
         matched: false,
         action: 'amount_mismatch',
         message: 'Valor remoto inválido',
+        queryDurationMs,
       };
     }
 
     if (expectedCents !== receivedCents) {
-      logger.warn('Divergência de valor na conciliação — pagamento não confirmado', {
+      pixLog('error', 'Divergência de valor na conciliação — pagamento não confirmado', {
+        correlationId,
         paymentId: payment.id,
-        txid: payment.txid ?? undefined,
+        registrationId: payment.registrationId,
+        txid: payment.txid,
+        provider: 'sicredi',
+        operation: 'reconciliation_payment',
+        statusLocal: previousStatus,
+        statusRemote: remote.sicrediStatus,
+        errorCode: 'amount_mismatch',
+        attempt: 1,
+        durationMs: queryDurationMs,
         expectedCents,
         receivedCents,
       });
@@ -309,6 +439,7 @@ export class SicrediReconciliationService {
         matched: false,
         action: 'amount_mismatch',
         message: `Valor divergente: esperado ${expectedCents} centavos, recebido ${receivedCents}`,
+        queryDurationMs,
       };
     }
 
@@ -320,6 +451,7 @@ export class SicrediReconciliationService {
       ? await paymentRepository.findRegistrationById(payment.registrationId)
       : null;
     const registrationPreviousStatus = registration?.status ?? null;
+    const financialStartedAt = Date.now();
 
     if (charge && payment.registrationId) {
       const event = await paymentRepository.createPaymentEvent({
@@ -354,6 +486,19 @@ export class SicrediReconciliationService {
             amountReceived: received,
             registrationPreviousStatus,
           });
+          pixLog('info', 'Pagamento confirmado via conciliação', {
+            correlationId,
+            paymentId: payment.id,
+            registrationId: payment.registrationId,
+            chargeId: charge.id,
+            txid: payment.txid,
+            provider: 'sicredi',
+            operation: 'reconciliation_payment',
+            statusLocal: 'paid',
+            statusRemote: remote.sicrediStatus ?? 'CONCLUIDA',
+            durationMs: queryDurationMs,
+            attempt: 1,
+          });
           return {
             paymentId: payment.id,
             txid: payment.txid ?? '',
@@ -362,6 +507,7 @@ export class SicrediReconciliationService {
             matched: true,
             action: 'confirmed',
             message: err instanceof Error ? err.message.slice(0, 200) : 'confirmed_with_followup_error',
+            queryDurationMs,
           };
         }
         if (refreshed?.status === 'paid') {
@@ -373,6 +519,7 @@ export class SicrediReconciliationService {
             matched: true,
             action: 'idempotent',
             message: err instanceof Error ? err.message : 'already_paid',
+            queryDurationMs,
           };
         }
         throw err;
@@ -393,6 +540,15 @@ export class SicrediReconciliationService {
       }
     }
 
+    const financialDurationMs = Date.now() - financialStartedAt;
+    pixLog('debug', 'Atualização financeira concluída', {
+      correlationId,
+      paymentId: payment.id,
+      operation: 'financial_update',
+      durationMs: financialDurationMs,
+      provider: 'sicredi',
+    });
+
     await auditPaidConfirmation({
       payment,
       previousStatus,
@@ -403,11 +559,18 @@ export class SicrediReconciliationService {
       registrationPreviousStatus,
     });
 
-    logger.info('Pagamento confirmado via conciliação', {
+    pixLog('info', 'Pagamento confirmado via conciliação', {
+      correlationId,
       paymentId: payment.id,
-      txid: payment.txid ?? undefined,
-      previousStatus,
-      currentStatus: 'paid',
+      registrationId: payment.registrationId,
+      chargeId: charge?.id,
+      txid: payment.txid,
+      provider: 'sicredi',
+      operation: 'reconciliation_payment',
+      statusLocal: 'paid',
+      statusRemote: remote.sicrediStatus ?? 'CONCLUIDA',
+      durationMs: queryDurationMs,
+      attempt: 1,
     });
 
     return {
@@ -417,22 +580,33 @@ export class SicrediReconciliationService {
       currentStatus: 'paid',
       matched: true,
       action: 'confirmed',
+      queryDurationMs,
     };
   }
 
   async reconcilePending(
     limit = 50,
     concurrency = 5,
+    queryDurationsMs: number[] = [],
   ): Promise<ReconciliationResult[]> {
     const pending = await paymentRepository.listReconcilableSicrediPayments(limit);
 
     return mapWithConcurrency(pending, concurrency, async (payment) => {
       try {
-        return await this.reconcilePayment(payment.id);
+        return await this.reconcilePayment(payment.id, queryDurationsMs);
       } catch (err) {
-        logger.warn('Falha ao conciliar pagamento', {
+        const errorCode = classifyPixError(err, { operation: 'reconciliation_payment' });
+        pixLog('warn', 'Falha ao conciliar pagamento', {
+          correlationId: paymentCorrelationId(payment.id),
           paymentId: payment.id,
-          message: err instanceof Error ? err.message.slice(0, 300) : 'unknown',
+          registrationId: payment.registrationId,
+          txid: payment.txid,
+          provider: 'sicredi',
+          operation: 'reconciliation_payment',
+          statusLocal: payment.status,
+          errorCode,
+          errorMessage: err instanceof Error ? err.message.slice(0, 300) : 'unknown',
+          attempt: 1,
         });
         return {
           paymentId: payment.id,

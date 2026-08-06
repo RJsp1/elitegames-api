@@ -16,6 +16,9 @@ export interface PaymentProvider {
     registrationNumber: string;
     categoryName?: string;
     solicitacaoPagador?: string;
+    correlationId?: string;
+    paymentId?: string;
+    registrationId?: string;
   }): Promise<ProviderChargeResult>;
 
   getCharge(txid: string): Promise<ProviderChargeStatus>;

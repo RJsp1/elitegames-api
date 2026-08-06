@@ -19,6 +19,9 @@ export class SicrediPixProvider implements PaymentProvider {
     registrationNumber: string;
     categoryName?: string;
     solicitacaoPagador?: string;
+    correlationId?: string;
+    paymentId?: string;
+    registrationId?: string;
   }): Promise<ProviderChargeResult> {
     if (!input.debtorCpf || !input.debtorName) {
       throw new Error('SicrediPixProvider exige debtorName e debtorCpf');

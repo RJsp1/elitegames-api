@@ -3,8 +3,15 @@ import type { SicrediCobRequest, SicrediCobResponse } from '../../types/sicredi.
 import { AppError } from '../../utils/app-error.js';
 import { addSeconds } from '../../utils/date.js';
 import { logger } from '../../utils/logger.js';
-import { redactSensitiveData } from '../../utils/redact-sensitive-data.js';
+import { redactSensitiveData, maskTxid } from '../../utils/redact-sensitive-data.js';
 import { assertValidCpf } from '../../utils/cpf.js';
+import {
+  classifyPixError,
+  extractSicrediCorrelationId,
+  measureDurationMs,
+  paymentCorrelationId,
+  pixLog,
+} from '../../utils/observability.js';
 import { createSicrediHttpClient } from './sicredi-http-client.js';
 import { sicrediAuthService } from './sicredi-auth.service.js';
 import { mapSicrediStatus } from '../payment/payment-status.mapper.js';
@@ -78,9 +85,16 @@ export class SicrediChargeService {
     registrationNumber: string;
     categoryName?: string;
     solicitacaoPagador?: string;
+    correlationId?: string;
+    paymentId?: string;
+    registrationId?: string;
   }): Promise<ProviderChargeResult> {
     const config = getSicrediConfig();
     const client = createSicrediHttpClient();
+    const startedAt = Date.now();
+    const attempt = 1;
+    const correlationId = input.correlationId ?? input.paymentId ?? undefined;
+
     const token = await sicrediAuthService.getAccessToken();
 
     const body = buildSicrediCobBody({
@@ -104,10 +118,27 @@ export class SicrediChargeService {
       },
     );
 
+    const durationMs = measureDurationMs(startedAt);
+    const sicrediCorrelationId = extractSicrediCorrelationId(response.headers);
+
     if (response.status < 200 || response.status >= 300) {
-      logger.error('Falha ao criar cobrança Sicredi', {
-        status: response.status,
-        body: redactSensitiveData(response.data),
+      const errorCode = classifyPixError(null, {
+        httpStatus: response.status,
+        operation: 'sicredi_charge_create',
+      });
+      pixLog('error', 'Falha ao criar cobrança Sicredi', {
+        correlationId,
+        paymentId: input.paymentId,
+        registrationId: input.registrationId,
+        txid: input.txid,
+        provider: 'sicredi',
+        operation: 'sicredi_charge_create',
+        attempt,
+        httpStatus: response.status,
+        durationMs,
+        errorCode,
+        endpoint: 'api/v3/cob/{txid}',
+        sicrediCorrelationId,
       });
       throw AppError.serviceUnavailable(
         'Falha ao criar cobrança Pix Sicredi',
@@ -117,6 +148,17 @@ export class SicrediChargeService {
 
     const data = response.data;
     if (!data.pixCopiaECola) {
+      pixLog('error', 'Cobrança Sicredi sem pixCopiaECola', {
+        correlationId,
+        paymentId: input.paymentId,
+        txid: input.txid,
+        provider: 'sicredi',
+        operation: 'sicredi_charge_create',
+        attempt,
+        durationMs,
+        errorCode: 'sicredi_invalid_response',
+        endpoint: 'api/v3/cob/{txid}',
+      });
       throw AppError.serviceUnavailable(
         'Cobrança Sicredi sem pixCopiaECola',
         'SICREDI_MISSING_PIX',
@@ -124,6 +166,21 @@ export class SicrediChargeService {
     }
 
     const expiresAt = addSeconds(new Date(), data.calendario?.expiracao ?? input.expirationSeconds);
+
+    pixLog('info', 'Cobrança Sicredi criada', {
+      correlationId,
+      paymentId: input.paymentId,
+      registrationId: input.registrationId,
+      txid: data.txid || input.txid,
+      provider: 'sicredi',
+      operation: 'sicredi_charge_create',
+      statusRemote: data.status,
+      attempt,
+      durationMs,
+      httpStatus: response.status,
+      endpoint: 'api/v3/cob/{txid}',
+      sicrediCorrelationId,
+    });
 
     return {
       txid: data.txid || input.txid,
@@ -137,8 +194,20 @@ export class SicrediChargeService {
     };
   }
 
-  async getCharge(txid: string): Promise<ProviderChargeStatus> {
+  async getCharge(
+    txid: string,
+    opts?: {
+      correlationId?: string;
+      paymentId?: string;
+      attempt?: number;
+    },
+  ): Promise<ProviderChargeStatus & { queryDurationMs?: number }> {
     const client = createSicrediHttpClient();
+    const startedAt = Date.now();
+    const attempt = opts?.attempt ?? 1;
+    const correlationId =
+      opts?.correlationId ?? (opts?.paymentId ? paymentCorrelationId(opts.paymentId) : undefined);
+
     const token = await sicrediAuthService.getAccessToken();
 
     const response = await client.get<
@@ -147,12 +216,43 @@ export class SicrediChargeService {
       headers: { Authorization: `Bearer ${token}` },
     });
 
+    const durationMs = measureDurationMs(startedAt);
+    const sicrediCorrelationId = extractSicrediCorrelationId(response.headers);
+
     if (response.status === 404) {
+      pixLog('warn', 'Cobrança Sicredi não encontrada', {
+        correlationId,
+        paymentId: opts?.paymentId,
+        txid,
+        provider: 'sicredi',
+        operation: 'sicredi_charge_get',
+        attempt,
+        httpStatus: 404,
+        durationMs,
+        errorCode: 'sicredi_http_error',
+        endpoint: 'api/v3/cob/{txid}',
+      });
       throw AppError.notFound('Cobrança Sicredi não encontrada');
     }
 
     if (response.status < 200 || response.status >= 300) {
-      logger.error('Falha ao consultar cobrança Sicredi', { status: response.status });
+      const errorCode = classifyPixError(null, {
+        httpStatus: response.status,
+        operation: 'sicredi_charge_get',
+      });
+      pixLog('error', 'Falha ao consultar cobrança Sicredi', {
+        correlationId,
+        paymentId: opts?.paymentId,
+        txid,
+        provider: 'sicredi',
+        operation: 'sicredi_charge_get',
+        attempt,
+        httpStatus: response.status,
+        durationMs,
+        errorCode,
+        endpoint: 'api/v3/cob/{txid}',
+        sicrediCorrelationId,
+      });
       throw AppError.serviceUnavailable(
         'Falha ao consultar cobrança Sicredi',
         'SICREDI_GET_FAILED',
@@ -161,6 +261,21 @@ export class SicrediChargeService {
 
     const data = response.data;
     const pix = data.pix?.[0];
+
+    pixLog('debug', 'Consulta cobrança Sicredi', {
+      correlationId,
+      paymentId: opts?.paymentId,
+      txid: data.txid || txid,
+      provider: 'sicredi',
+      operation: 'sicredi_charge_get',
+      statusRemote: data.status,
+      attempt,
+      durationMs,
+      httpStatus: response.status,
+      endpoint: 'api/v3/cob/{txid}',
+      sicrediCorrelationId,
+      txidMasked: maskTxid(data.txid || txid),
+    });
 
     return {
       txid: data.txid || txid,
@@ -172,6 +287,7 @@ export class SicrediChargeService {
       endToEndId: pix?.endToEndId,
       paidAt: pix?.horario,
       raw: redactSensitiveData(data),
+      queryDurationMs: durationMs,
     };
   }
 }

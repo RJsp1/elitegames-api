@@ -28,6 +28,14 @@ export function createApp() {
     ).catch(next);
   });
 
+  app.get('/health/reconciliation', (req, res, next) => {
+    Promise.resolve(
+      import('./controllers/health.controller.js').then(({ healthController }) => {
+        healthController.reconciliation(req, res);
+      }),
+    ).catch(next);
+  });
+
   app.use(routes);
 
   app.use(notFoundMiddleware);

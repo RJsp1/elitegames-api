@@ -46,6 +46,28 @@ server {
 9. Configurar `SICREDI_WEBHOOK_URL` apontando para o domínio público
 10. Registrar webhook (`npm run sicredi:webhook` com flags)
 
+## Observabilidade
+
+- Health API: `GET /health`
+- Health do worker de polling: `GET /health/reconciliation`
+  - lê heartbeat em `runtime/reconciliation-health.json` (escrito pelo processo PM2 `elitegames-reconciliation`)
+  - sem tokens/CPF/chave Pix/certificados
+- Logs estruturados JSON (correlationId = `payment.id`)
+
+## Rotação de logs PM2 (manual)
+
+Não instalar automaticamente. Em produção:
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 20M
+pm2 set pm2-logrotate:retain 14
+pm2 set pm2-logrotate:compress true
+pm2 set pm2-logrotate:workerInterval 60
+```
+
+Confirme com `pm2 conf pm2-logrotate`.
+
 ## Variáveis críticas
 
 - `SICREDI_CLIENT_ID` / `SICREDI_CLIENT_SECRET` / `SICREDI_PIX_KEY`

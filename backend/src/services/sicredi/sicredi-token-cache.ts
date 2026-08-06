@@ -2,6 +2,7 @@ import type { SicrediCachedToken } from '../../types/sicredi.types.js';
 
 let cached: SicrediCachedToken | null = null;
 let inflight: Promise<SicrediCachedToken> | null = null;
+let refreshCount = 0;
 
 export class SicrediTokenCache {
   get(): SicrediCachedToken | null {
@@ -22,6 +23,14 @@ export class SicrediTokenCache {
     inflight = null;
   }
 
+  getRefreshCount(): number {
+    return refreshCount;
+  }
+
+  resetRefreshCount(): void {
+    refreshCount = 0;
+  }
+
   async getOrFetch(fetcher: () => Promise<SicrediCachedToken>): Promise<SicrediCachedToken> {
     const existing = this.get();
     if (existing) return existing;
@@ -30,6 +39,7 @@ export class SicrediTokenCache {
 
     inflight = fetcher()
       .then((token) => {
+        refreshCount += 1;
         this.set(token);
         return token;
       })

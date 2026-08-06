@@ -178,6 +178,9 @@ export class PaymentService {
         registrationNumber: registration.registrationNumber,
         categoryName: registration.format ?? 'inscricao',
         solicitacaoPagador: 'Inscrição Elite Games 2026',
+        correlationId: payment.id,
+        paymentId: payment.id,
+        registrationId: registration.id,
       });
 
       const qrCodeDataUrl = await qrCodeService.toDataUrl(chargeResult.pixCopiaECola);
@@ -245,10 +248,15 @@ export class PaymentService {
       });
 
       logger.info('Pagamento criado', {
+        correlationId: payment.id,
         paymentId: payment.id,
-        txid: chargeResult.txid,
-        amount,
         registrationId: registration.id,
+        chargeId: charge.id,
+        txidMasked: chargeResult.txid.slice(0, 4) + '…' + chargeResult.txid.slice(-4),
+        provider: providerCode,
+        operation: 'payment_create',
+        statusLocal: updatedPayment.status,
+        amount,
       });
 
       return toResponse(updatedPayment, charge);
