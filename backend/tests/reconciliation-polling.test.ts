@@ -104,7 +104,7 @@ describe('Sicredi reconciliation polling', () => {
 
   it('CONCLUIDA confirma pagamento, charge e registration paid', async () => {
     const seeded = await seedActiveSicrediPayment();
-    const auditSpy = vi.spyOn(auditMod.auditLogRepository, 'write');
+    const auditSpy = vi.spyOn(auditMod.auditLogRepository, 'writeFinancialEvent');
 
     vi.spyOn(
       await import('../src/services/sicredi/sicredi-charge.service.js').then(
@@ -125,10 +125,13 @@ describe('Sicredi reconciliation polling', () => {
     expect(result.action).toBe('confirmed');
     expect(result.currentStatus).toBe('paid');
 
-    expect(auditSpy).toHaveBeenCalledTimes(1);
-    expect(auditSpy.mock.calls[0]?.[0]).toMatchObject({
+    const reconciledCalls = auditSpy.mock.calls.filter(
+      (call) => call[0]?.action === 'PAYMENT_RECONCILED',
+    );
+    expect(reconciledCalls).toHaveLength(1);
+    expect(reconciledCalls[0]?.[0]).toMatchObject({
       action: 'PAYMENT_RECONCILED',
-      entityType: 'payment',
+      entityTable: 'payments',
       entityId: seeded.paymentId,
     });
 
@@ -160,7 +163,7 @@ describe('Sicredi reconciliation polling', () => {
 
   it('ATIVA permanece unchanged e não tenta auditoria PAYMENT_RECONCILED', async () => {
     const seeded = await seedActiveSicrediPayment({ status: 'pending' });
-    const auditSpy = vi.spyOn(auditMod.auditLogRepository, 'write');
+    const auditSpy = vi.spyOn(auditMod.auditLogRepository, 'writeFinancialEvent');
 
     vi.spyOn(
       (await import('../src/services/sicredi/sicredi-charge.service.js')).sicrediChargeService,
@@ -312,9 +315,13 @@ describe('Sicredi reconciliation polling', () => {
   it('auditoria falhando não derruba confirmação', async () => {
     const seeded = await seedActiveSicrediPayment();
 
-    vi.spyOn(auditMod.auditLogRepository, 'write').mockRejectedValue(
-      new Error('audit unavailable'),
-    );
+    vi.spyOn(auditMod.auditLogRepository, 'writeFinancialEvent').mockResolvedValue({
+      ok: false,
+      duplicated: false,
+      record: null,
+      errorCode: '23502',
+      errorMessage: 'entity_table null',
+    });
 
     vi.spyOn(
       (await import('../src/services/sicredi/sicredi-charge.service.js')).sicrediChargeService,

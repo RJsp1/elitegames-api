@@ -1,6 +1,6 @@
 import { getEnv } from '../../config/env.js';
 import { paymentRepository } from '../../repositories/payment.repository.js';
-import { auditLogRepository } from '../../repositories/audit-log.repository.js';
+import { financialAuditService } from '../audit/financial-audit.service.js';
 import type { PaymentRecord, ProviderChargeStatus } from '../../types/payment.types.js';
 import { nowIso } from '../../utils/date.js';
 import { logger } from '../../utils/logger.js';
@@ -39,9 +39,6 @@ export interface ReconciliationCycleSummary {
   durationMs: number;
 }
 
-/**
- * Classifica o status bruto da cobrança Sicredi/Bacen para o polling.
- */
 export function classifySicrediCobStatus(rawStatus: string | undefined | null): SicrediCobClassification {
   const normalized = (rawStatus ?? '').trim().toUpperCase();
 
@@ -102,6 +99,45 @@ function resolveReceivedAmount(remote: ProviderChargeStatus): string {
   return remote.receivedAmount ?? remote.amountOriginal;
 }
 
+async function auditPaidConfirmation(input: {
+  payment: PaymentRecord;
+  previousStatus: string;
+  previousChargeStatus: string | null;
+  paidAt: string;
+  endToEndId: string;
+  amountReceived: string;
+  registrationPreviousStatus?: string | null;
+}): Promise<void> {
+  await financialAuditService.paymentStatusChanged({
+    paymentId: input.payment.id,
+    previousStatus: input.previousStatus,
+    newStatus: 'paid',
+    paidAt: input.paidAt,
+    endToEndId: input.endToEndId,
+    reason: 'polling_sicredi',
+  });
+
+  await financialAuditService.paymentReconciled({
+    paymentId: input.payment.id,
+    previousPaymentStatus: input.previousStatus,
+    previousChargeStatus: input.previousChargeStatus,
+    paidAt: input.paidAt,
+    endToEndId: input.endToEndId,
+    amountReceived: input.amountReceived,
+    reason: 'polling_sicredi',
+  });
+
+  if (input.payment.registrationId && input.registrationPreviousStatus) {
+    await financialAuditService.registrationStatusChanged({
+      registrationId: input.payment.registrationId,
+      previousStatus: input.registrationPreviousStatus,
+      newStatus: 'paid',
+      paymentId: input.payment.id,
+      reason: 'polling_sicredi',
+    });
+  }
+}
+
 export class SicrediReconciliationService {
   private cycleRunning = false;
 
@@ -109,15 +145,10 @@ export class SicrediReconciliationService {
     return this.cycleRunning;
   }
 
-  /** Uso em testes — libera trava de ciclo. */
   resetCycleLock(): void {
     this.cycleRunning = false;
   }
 
-  /**
-   * Executa um ciclo com trava anti-sobreposição.
-   * Retorna null quando um ciclo já está em andamento.
-   */
   async runCycle(options?: {
     limit?: number;
     concurrency?: number;
@@ -168,6 +199,8 @@ export class SicrediReconciliationService {
     remote: ProviderChargeStatus,
   ): Promise<ReconciliationResult> {
     const previousStatus = payment.status;
+    const chargeBefore = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
+    const previousChargeStatus = chargeBefore?.status ?? null;
     const classification = classifySicrediCobStatus(remote.sicrediStatus ?? remote.status);
 
     if (classification === 'unknown') {
@@ -188,7 +221,6 @@ export class SicrediReconciliationService {
     }
 
     if (classification === 'active') {
-      // ATIVA sem mudança local: sem auditoria repetitiva.
       return {
         paymentId: payment.id,
         txid: payment.txid ?? '',
@@ -206,8 +238,19 @@ export class SicrediReconciliationService {
         await paymentRepository.updateChargeStatus(charge.id, 'cancelled', {
           rawResponse: (redactSensitiveData(remote.raw ?? {}) as Record<string, unknown>) ?? null,
         });
+        await financialAuditService.pixChargeCancelled({
+          chargeId: charge.id,
+          previousStatus: previousChargeStatus ?? charge.status,
+          newStatus: 'cancelled',
+          reason: 'polling_sicredi',
+        });
       }
-      await this.writeTransitionAudit(payment.id, previousStatus, updated.status, 'cancelled');
+      await financialAuditService.paymentStatusChanged({
+        paymentId: payment.id,
+        previousStatus,
+        newStatus: updated.status,
+        reason: 'polling_sicredi',
+      });
       logger.info('Pagamento cancelado via conciliação', {
         paymentId: payment.id,
         txid: payment.txid ?? undefined,
@@ -222,7 +265,6 @@ export class SicrediReconciliationService {
       };
     }
 
-    // CONCLUIDA → paid (com checagem de valor em centavos)
     const received = resolveReceivedAmount(remote);
     let expectedCents: number;
     let receivedCents: number;
@@ -252,6 +294,13 @@ export class SicrediReconciliationService {
         expectedCents,
         receivedCents,
       });
+      await financialAuditService.paymentAmountMismatch({
+        paymentId: payment.id,
+        expectedCents,
+        receivedCents,
+        txid: payment.txid,
+        reason: 'polling_sicredi',
+      });
       return {
         paymentId: payment.id,
         txid: payment.txid ?? '',
@@ -263,10 +312,14 @@ export class SicrediReconciliationService {
       };
     }
 
-    const charge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
+    const charge = chargeBefore;
     const paidAt = remote.paidAt ?? nowIso();
     const endToEndId =
       remote.endToEndId ?? payment.endToEndId ?? `RECON${payment.id.replace(/-/g, '').slice(0, 28)}`;
+    const registration = payment.registrationId
+      ? await paymentRepository.findRegistrationById(payment.registrationId)
+      : null;
+    const registrationPreviousStatus = registration?.status ?? null;
 
     if (charge && payment.registrationId) {
       const event = await paymentRepository.createPaymentEvent({
@@ -290,10 +343,17 @@ export class SicrediReconciliationService {
             (redactSensitiveData(remote.raw ?? {}) as Record<string, unknown>) ?? undefined,
         });
       } catch (err) {
-        // Financeiro pode ter liquidado mesmo se um passo posterior falhou.
         const refreshed = await paymentRepository.findPaymentById(payment.id);
         if (refreshed?.status === 'paid' && previousStatus !== 'paid') {
-          await this.writeTransitionAudit(payment.id, previousStatus, 'paid', 'confirmed');
+          await auditPaidConfirmation({
+            payment,
+            previousStatus,
+            previousChargeStatus,
+            paidAt,
+            endToEndId,
+            amountReceived: received,
+            registrationPreviousStatus,
+          });
           return {
             paymentId: payment.id,
             txid: payment.txid ?? '',
@@ -333,7 +393,15 @@ export class SicrediReconciliationService {
       }
     }
 
-    await this.writeTransitionAudit(payment.id, previousStatus, 'paid', 'confirmed');
+    await auditPaidConfirmation({
+      payment,
+      previousStatus,
+      previousChargeStatus,
+      paidAt,
+      endToEndId,
+      amountReceived: received,
+      registrationPreviousStatus,
+    });
 
     logger.info('Pagamento confirmado via conciliação', {
       paymentId: payment.id,
@@ -358,7 +426,7 @@ export class SicrediReconciliationService {
   ): Promise<ReconciliationResult[]> {
     const pending = await paymentRepository.listReconcilableSicrediPayments(limit);
 
-    const results = await mapWithConcurrency(pending, concurrency, async (payment) => {
+    return mapWithConcurrency(pending, concurrency, async (payment) => {
       try {
         return await this.reconcilePayment(payment.id);
       } catch (err) {
@@ -377,41 +445,6 @@ export class SicrediReconciliationService {
         };
       }
     });
-
-    return results;
-  }
-
-  /**
-   * Auditoria somente em transições relevantes (paid/cancelled).
-   * Falha de auditoria nunca propaga para o fluxo financeiro.
-   */
-  private async writeTransitionAudit(
-    paymentId: string,
-    previousStatus: string,
-    currentStatus: string,
-    outcome: 'confirmed' | 'cancelled',
-  ): Promise<void> {
-    try {
-      await auditLogRepository.write({
-        action: 'PAYMENT_RECONCILED',
-        entityType: 'payment',
-        entityId: paymentId,
-        before: { status: previousStatus },
-        after: { status: currentStatus },
-        reason: outcome,
-        metadata: { previousStatus, currentStatus, outcome },
-      });
-    } catch (auditError) {
-      const message =
-        auditError instanceof Error
-          ? auditError.message.slice(0, 300)
-          : 'unknown_audit_error';
-      logger.warn('Falha ao gravar audit log', {
-        message,
-        action: 'PAYMENT_RECONCILED',
-        entityId: paymentId,
-      });
-    }
   }
 }
 

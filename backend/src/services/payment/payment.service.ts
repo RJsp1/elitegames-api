@@ -1,6 +1,6 @@
 import { getEnv } from '../../config/env.js';
 import { paymentRepository } from '../../repositories/payment.repository.js';
-import { auditLogRepository } from '../../repositories/audit-log.repository.js';
+import { financialAuditService } from '../audit/financial-audit.service.js';
 import type {
   CreatePaymentInput,
   PaymentChargeRecord,
@@ -156,6 +156,14 @@ export class PaymentService {
       },
     });
 
+    await financialAuditService.paymentCreated({
+      paymentId: payment.id,
+      status: payment.status,
+      amount,
+      provider: providerCode,
+      registrationId: registration.id,
+    });
+
     try {
       const txid = generateTxid('EG');
       const pixProvider = await getPaymentProvider();
@@ -180,6 +188,13 @@ export class PaymentService {
         txid: chargeResult.txid,
         providerChargeId: chargeResult.providerChargeId ?? chargeResult.txid,
         expiresAt,
+      });
+
+      await financialAuditService.paymentStatusChanged({
+        paymentId: payment.id,
+        previousStatus: payment.status,
+        newStatus: updatedPayment.status,
+        reason: 'payment_create',
       });
 
       const charge = await paymentRepository.createPaymentCharge({
@@ -207,31 +222,27 @@ export class PaymentService {
         isCurrent: true,
       });
 
+      await financialAuditService.pixChargeCreated({
+        chargeId: charge.id,
+        paymentId: payment.id,
+        txid: charge.txid,
+        status: charge.status,
+        amount: charge.amount,
+        expiresAt: charge.expiresAt,
+        isCurrent: charge.isCurrent,
+      });
+
+      const previousRegistrationStatus = registration.status;
       await paymentRepository.updateRegistrationStatus(registration.id, 'pending_payment');
       await paymentRepository.linkActiveReservationPayment(registration.id, payment.id);
 
-      try {
-        await auditLogRepository.write({
-          action: 'PAYMENT_CREATED',
-          entityType: 'payment',
-          entityId: payment.id,
-          metadata: {
-            txid: chargeResult.txid,
-            amount,
-            provider: providerCode,
-            registrationId: registration.id,
-            athleteId: debtor.athleteId,
-          },
-        });
-      } catch (auditError) {
-        logger.warn('Falha ao gravar audit log', {
-          message:
-            auditError instanceof Error
-              ? auditError.message.slice(0, 300)
-              : 'unknown_audit_error',
-          paymentId: payment.id,
-        });
-      }
+      await financialAuditService.registrationStatusChanged({
+        registrationId: registration.id,
+        previousStatus: previousRegistrationStatus,
+        newStatus: 'pending_payment',
+        paymentId: payment.id,
+        reason: 'payment_create',
+      });
 
       logger.info('Pagamento criado', {
         paymentId: payment.id,

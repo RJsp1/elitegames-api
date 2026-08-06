@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import { sicrediWebhookSchema } from '../schemas/webhook.schema.js';
 import { paymentRepository } from '../repositories/payment.repository.js';
-import { amountsEqual } from '../utils/money.js';
+import { financialAuditService } from '../services/audit/financial-audit.service.js';
+import { amountsEqual, pixAmountToCents, toCents } from '../utils/money.js';
 import { nowIso } from '../utils/date.js';
 import { logger } from '../utils/logger.js';
 import { redactSensitiveData } from '../utils/redact-sensitive-data.js';
@@ -89,7 +90,21 @@ export class WebhookController {
             txid: item.txid,
             message: 'VALUE_MISMATCH',
           });
+          const previousStatus = payment.status;
           await paymentRepository.updatePaymentStatus(payment.id, 'under_review');
+          await financialAuditService.paymentAmountMismatch({
+            paymentId: payment.id,
+            expectedCents: toCents(Number(payment.totalAmount)),
+            receivedCents: pixAmountToCents(item.valor),
+            txid: item.txid,
+            reason: 'webhook_sicredi',
+          });
+          await financialAuditService.paymentStatusChanged({
+            paymentId: payment.id,
+            previousStatus,
+            newStatus: 'under_review',
+            reason: 'webhook_sicredi',
+          });
           await paymentRepository.markPaymentEventFailed(event.id, 'VALUE_MISMATCH');
           continue;
         }
@@ -115,14 +130,45 @@ export class WebhookController {
           continue;
         }
 
+        const previousStatus = payment.status;
+        const previousChargeStatus = charge.status;
+        const registration = await paymentRepository.findRegistrationById(payment.registrationId);
+        const registrationPreviousStatus = registration?.status ?? 'pending_payment';
+        const paidAt = item.horario || nowIso();
+
         await paymentRepository.confirmPaidAtomically({
           paymentId: payment.id,
           chargeId: charge.id,
           registrationId: payment.registrationId,
           endToEndId: item.endToEndId,
-          paidAt: item.horario || nowIso(),
+          paidAt,
           eventId: event.id,
           chargeRawResponse: (redactSensitiveData(item) as Record<string, unknown>) ?? undefined,
+        });
+
+        await financialAuditService.paymentStatusChanged({
+          paymentId: payment.id,
+          previousStatus,
+          newStatus: 'paid',
+          paidAt,
+          endToEndId: item.endToEndId,
+          reason: 'webhook_sicredi',
+        });
+        await financialAuditService.paymentReconciled({
+          paymentId: payment.id,
+          previousPaymentStatus: previousStatus,
+          previousChargeStatus,
+          paidAt,
+          endToEndId: item.endToEndId,
+          amountReceived: item.valor,
+          reason: 'webhook_sicredi',
+        });
+        await financialAuditService.registrationStatusChanged({
+          registrationId: payment.registrationId,
+          previousStatus: registrationPreviousStatus,
+          newStatus: 'paid',
+          paymentId: payment.id,
+          reason: 'webhook_sicredi',
         });
 
         result.processed += 1;

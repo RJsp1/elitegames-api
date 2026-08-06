@@ -89,3 +89,17 @@ export function maskToken(token: string): string {
   if (token.length <= 8) return '****';
   return `${token.slice(0, 4)}…****`;
 }
+
+/** Mascaramento de txid Pix (exibe 4+4). */
+export function maskTxid(txid: string): string {
+  if (!txid) return '';
+  if (txid.length <= 8) return '****';
+  return `${txid.slice(0, 4)}…${txid.slice(-4)}`;
+}
+
+/** Mascaramento de endToEndId (exibe 4+4). */
+export function maskEndToEndId(endToEndId: string): string {
+  if (!endToEndId) return '';
+  if (endToEndId.length <= 8) return '****';
+  return `${endToEndId.slice(0, 4)}…${endToEndId.slice(-4)}`;
+}

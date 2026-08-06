@@ -95,9 +95,12 @@ describe('audit_logs schema + payment resilience', () => {
     const reservationId = randomUUID();
     seedRegistrationWithAthlete(regId, reservationId);
 
-    vi.spyOn(auditLogRepository, 'write').mockRejectedValueOnce(
-      new Error("Could not find the 'actor' column of 'audit_logs' in the schema cache"),
-    );
+    vi.spyOn(auditLogRepository, 'writeFinancialEvent').mockResolvedValueOnce({
+      ok: false,
+      duplicated: false,
+      record: null,
+      errorMessage: "Could not find the 'actor' column of 'audit_logs' in the schema cache",
+    });
 
     const app = createApp();
     const res = await request(app)
