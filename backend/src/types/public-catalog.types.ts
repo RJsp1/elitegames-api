@@ -46,7 +46,10 @@ export interface PublicPriceBatchRecord {
 export interface PublicCategoryRecord {
   id: string;
   eventId: string;
+  /** Slug público para navegação (/categorias/:slug). */
+  slug: string;
   name: string;
+  shortDescription: string | null;
   description: string | null;
   format: 'individual' | 'dupla' | 'equipe' | string;
   gender: string | null;
@@ -61,8 +64,34 @@ export interface PublicCategoryRecord {
   priceBatchId: string | null;
   registrationOpen: boolean;
   soldOut: boolean;
+  notes: string | null;
+  /** Sempre array (nunca null) após hidratação. */
+  videoUrls: string[];
+  orderIndex: number;
   isActive: boolean;
   deletedAt: string | null;
+}
+
+/** DTO público estável da categoria (lista e detalhe). */
+export interface PublicCategoryDto {
+  categoryId: string;
+  slug: string;
+  name: string;
+  shortDescription: string | null;
+  description: string | null;
+  format: string;
+  teamSize: number;
+  gender: string | null;
+  ageRange: string | null;
+  capacity: number | null;
+  occupiedSlots: number;
+  availableSlots: number | null;
+  currentPrice: string;
+  priceBatchId: string | null;
+  registrationOpen: boolean;
+  soldOut: boolean;
+  notes: string | null;
+  videoUrls: string[];
 }
 
 export interface RegistrationAccessTokenRecord {

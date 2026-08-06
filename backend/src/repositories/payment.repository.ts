@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getSupabase } from '../config/supabase.js';
 import type {
   AthleteRecord,
+  GuardianRecord,
   PaymentChargeRecord,
   PaymentEventRecord,
   PaymentProviderRecord,
@@ -12,6 +13,8 @@ import type {
   RegistrationStatus,
   ReservationRecord,
   ReservationStatus,
+  TeamRecord,
+  WaiverRecord,
 } from '../types/payment.types.js';
 import { nowIso } from '../utils/date.js';
 import { AppError } from '../utils/app-error.js';
@@ -26,6 +29,9 @@ const events = new Map<string, PaymentEventRecord>();
 const reservations = new Map<string, ReservationRecord>();
 const athletes = new Map<string, AthleteRecord>();
 const registrationAthletes = new Map<string, RegistrationAthleteLink>();
+const teams = new Map<string, TeamRecord>();
+const guardians = new Map<string, GuardianRecord>();
+const waivers = new Map<string, WaiverRecord>();
 const txidToPaymentId = new Map<string, string>();
 const externalEventIndex = new Map<string, string>();
 
@@ -46,6 +52,9 @@ export function clearPaymentMemoryStore(): void {
   reservations.clear();
   athletes.clear();
   registrationAthletes.clear();
+  teams.clear();
+  guardians.clear();
+  waivers.clear();
   txidToPaymentId.clear();
   externalEventIndex.clear();
   seedMockProvider();
@@ -136,9 +145,49 @@ export function seedAthleteForTest(
     id: partial.id,
     fullName: partial.fullName,
     cpf: partial.cpf,
+    email: partial.email ?? null,
+    phone: partial.phone ?? null,
+    birthDate: partial.birthDate ?? null,
+    gender: partial.gender ?? null,
+    shirtSize: partial.shirtSize ?? null,
+    emergencyName: partial.emergencyName ?? null,
+    emergencyPhone: partial.emergencyPhone ?? null,
+    medicalRestrictions: partial.medicalRestrictions ?? null,
   };
   athletes.set(record.id, record);
   return record;
+}
+
+function mapAthleteRow(row: Record<string, unknown>): AthleteRecord {
+  return {
+    id: String(row.id),
+    fullName: String(row.full_name ?? ''),
+    cpf: String(row.cpf ?? ''),
+    email: (row.email as string) ?? null,
+    phone: (row.phone as string) ?? null,
+    birthDate: (row.birth_date as string) ?? null,
+    gender: (row.gender as string) ?? null,
+    shirtSize: (row.shirt_size as string) ?? null,
+    emergencyName: (row.emergency_name as string) ?? null,
+    emergencyPhone: (row.emergency_phone as string) ?? null,
+    medicalRestrictions: (row.medical_restrictions as string) ?? null,
+  };
+}
+
+export function listGuardiansMemoryForTest(): GuardianRecord[] {
+  return Array.from(guardians.values());
+}
+
+export function listTeamsMemoryForTest(): TeamRecord[] {
+  return Array.from(teams.values());
+}
+
+export function listWaiversMemoryForTest(): WaiverRecord[] {
+  return Array.from(waivers.values());
+}
+
+export function listAthletesMemoryForTest(): AthleteRecord[] {
+  return Array.from(athletes.values());
 }
 
 export function seedRegistrationAthleteForTest(
@@ -341,7 +390,9 @@ export class PaymentRepository {
 
     const { data: athleteRow, error: athleteError } = await supabase
       .from('athletes')
-      .select('id, full_name, cpf')
+      .select(
+        'id, full_name, cpf, email, phone, birth_date, gender, shirt_size, emergency_name, emergency_phone, medical_restrictions',
+      )
       .eq('id', preferred.athleteId)
       .maybeSingle();
 
@@ -353,11 +404,7 @@ export class PaymentRepository {
       );
     }
 
-    return {
-      id: String(athleteRow.id),
-      fullName: String(athleteRow.full_name ?? ''),
-      cpf: String(athleteRow.cpf ?? ''),
-    };
+    return mapAthleteRow(athleteRow as Record<string, unknown>);
   }
 
   async findProviderByCode(code: string): Promise<PaymentProviderRecord | null> {
@@ -1278,16 +1325,14 @@ export class PaymentRepository {
     if (!supabase) return athletes.get(athleteId) ?? null;
     const { data, error } = await supabase
       .from('athletes')
-      .select('id, full_name, cpf')
+      .select(
+        'id, full_name, cpf, email, phone, birth_date, gender, shirt_size, emergency_name, emergency_phone, medical_restrictions',
+      )
       .eq('id', athleteId)
       .maybeSingle();
     if (error) throw AppError.internal(error.message);
     if (!data) return null;
-    return {
-      id: String(data.id),
-      fullName: String(data.full_name ?? ''),
-      cpf: String(data.cpf ?? ''),
-    };
+    return mapAthleteRow(data as Record<string, unknown>);
   }
 
   async findAthleteByCpf(cpfDigits: string): Promise<AthleteRecord | null> {
@@ -1301,46 +1346,283 @@ export class PaymentRepository {
     }
     const { data, error } = await supabase
       .from('athletes')
-      .select('id, full_name, cpf')
+      .select(
+        'id, full_name, cpf, email, phone, birth_date, gender, shirt_size, emergency_name, emergency_phone, medical_restrictions',
+      )
       .eq('cpf', digits)
       .maybeSingle();
     if (error) throw AppError.internal(error.message);
     if (!data) return null;
-    return {
-      id: String(data.id),
-      fullName: String(data.full_name ?? ''),
-      cpf: String(data.cpf ?? ''),
-    };
+    return mapAthleteRow(data as Record<string, unknown>);
   }
 
   async createAthlete(input: {
     fullName: string;
     cpf: string;
+    email?: string | null;
+    phone?: string | null;
+    birthDate?: string | null;
+    gender?: string | null;
+    shirtSize?: string | null;
+    emergencyName?: string | null;
+    emergencyPhone?: string | null;
+    medicalNotes?: string | null;
   }): Promise<AthleteRecord> {
     const record: AthleteRecord = {
       id: randomUUID(),
       fullName: input.fullName.trim(),
       cpf: input.cpf.replace(/\D/g, ''),
+      email: input.email?.trim() || null,
+      phone: input.phone?.trim() || null,
+      birthDate: input.birthDate?.trim() || null,
+      gender: input.gender?.trim() || null,
+      shirtSize: input.shirtSize?.trim() || null,
+      emergencyName: input.emergencyName?.trim() || null,
+      emergencyPhone: input.emergencyPhone?.trim() || null,
+      medicalRestrictions: input.medicalNotes?.trim() || null,
     };
     const supabase = getSupabase();
     if (!supabase) {
       athletes.set(record.id, record);
       return record;
     }
+
+    const insert: Record<string, unknown> = {
+      id: record.id,
+      full_name: record.fullName,
+      cpf: record.cpf,
+      is_public_profile: false,
+      consent_image: true,
+      consent_lgpd: true,
+      consent_whatsapp: true,
+      consent_email: true,
+    };
+    if (record.email) insert.email = record.email;
+    if (record.phone) insert.phone = record.phone;
+    if (record.birthDate) insert.birth_date = record.birthDate;
+    if (record.gender) insert.gender = record.gender;
+    if (record.shirtSize) insert.shirt_size = record.shirtSize;
+    if (record.emergencyName) insert.emergency_name = record.emergencyName;
+    if (record.emergencyPhone) insert.emergency_phone = record.emergencyPhone;
+    if (record.medicalRestrictions) insert.medical_restrictions = record.medicalRestrictions;
+
     const { data, error } = await supabase
       .from('athletes')
+      .insert(insert)
+      .select(
+        'id, full_name, cpf, email, phone, birth_date, gender, shirt_size, emergency_name, emergency_phone, medical_restrictions',
+      )
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return mapAthleteRow(data as Record<string, unknown>);
+  }
+
+  async updateAthlete(
+    athleteId: string,
+    input: {
+      fullName?: string;
+      email?: string | null;
+      phone?: string | null;
+      birthDate?: string | null;
+      gender?: string | null;
+      shirtSize?: string | null;
+      emergencyName?: string | null;
+      emergencyPhone?: string | null;
+      medicalNotes?: string | null;
+    },
+  ): Promise<AthleteRecord> {
+    const existing = await this.findAthleteById(athleteId);
+    if (!existing) throw AppError.notFound('Atleta não encontrado');
+
+    const next: AthleteRecord = {
+      ...existing,
+      fullName: input.fullName?.trim() || existing.fullName,
+      email: input.email !== undefined ? input.email?.trim() || null : existing.email,
+      phone: input.phone !== undefined ? input.phone?.trim() || null : existing.phone,
+      birthDate:
+        input.birthDate !== undefined ? input.birthDate?.trim() || null : existing.birthDate,
+      gender: input.gender !== undefined ? input.gender?.trim() || null : existing.gender,
+      shirtSize:
+        input.shirtSize !== undefined ? input.shirtSize?.trim() || null : existing.shirtSize,
+      emergencyName:
+        input.emergencyName !== undefined
+          ? input.emergencyName?.trim() || null
+          : existing.emergencyName,
+      emergencyPhone:
+        input.emergencyPhone !== undefined
+          ? input.emergencyPhone?.trim() || null
+          : existing.emergencyPhone,
+      medicalRestrictions:
+        input.medicalNotes !== undefined
+          ? input.medicalNotes?.trim() || null
+          : existing.medicalRestrictions,
+    };
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      athletes.set(next.id, next);
+      return next;
+    }
+
+    const { data, error } = await supabase
+      .from('athletes')
+      .update({
+        full_name: next.fullName,
+        email: next.email,
+        phone: next.phone,
+        birth_date: next.birthDate,
+        gender: next.gender,
+        shirt_size: next.shirtSize,
+        emergency_name: next.emergencyName,
+        emergency_phone: next.emergencyPhone,
+        medical_restrictions: next.medicalRestrictions,
+      })
+      .eq('id', athleteId)
+      .select(
+        'id, full_name, cpf, email, phone, birth_date, gender, shirt_size, emergency_name, emergency_phone, medical_restrictions',
+      )
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return mapAthleteRow(data as Record<string, unknown>);
+  }
+
+  async createGuardian(input: {
+    athleteId: string;
+    fullName: string;
+    cpf: string;
+    phone: string;
+    email?: string | null;
+    relationship?: string;
+  }): Promise<GuardianRecord> {
+    const record: GuardianRecord = {
+      id: randomUUID(),
+      athleteId: input.athleteId,
+      fullName: input.fullName.trim(),
+      cpf: input.cpf.replace(/\D/g, ''),
+      phone: input.phone.trim(),
+      email: input.email?.trim() || null,
+      relationship: (input.relationship ?? 'responsável').trim() || 'responsável',
+    };
+    const supabase = getSupabase();
+    if (!supabase) {
+      guardians.set(record.id, record);
+      return record;
+    }
+    const { data, error } = await supabase
+      .from('guardians')
       .insert({
         id: record.id,
+        athlete_id: record.athleteId,
         full_name: record.fullName,
         cpf: record.cpf,
+        phone: record.phone,
+        email: record.email,
+        relationship: record.relationship,
+        accepted_at: nowIso(),
       })
-      .select('id, full_name, cpf')
+      .select('id, athlete_id, full_name, cpf, phone, email, relationship')
       .single();
     if (error) throw AppError.internal(error.message);
     return {
       id: String(data.id),
-      fullName: String(data.full_name ?? ''),
-      cpf: String(data.cpf ?? ''),
+      athleteId: String(data.athlete_id),
+      fullName: String(data.full_name),
+      cpf: String(data.cpf),
+      phone: String(data.phone),
+      email: (data.email as string) ?? null,
+      relationship: String(data.relationship ?? 'responsável'),
+    };
+  }
+
+  async createTeam(input: {
+    eventId: string;
+    categoryId: string;
+    name: string;
+  }): Promise<TeamRecord> {
+    const record: TeamRecord = {
+      id: randomUUID(),
+      eventId: input.eventId,
+      categoryId: input.categoryId,
+      name: input.name.trim(),
+      isPublic: false,
+    };
+    const supabase = getSupabase();
+    if (!supabase) {
+      teams.set(record.id, record);
+      return record;
+    }
+    const { data, error } = await supabase
+      .from('teams')
+      .insert({
+        id: record.id,
+        event_id: record.eventId,
+        category_id: record.categoryId,
+        name: record.name,
+        is_public: false,
+      })
+      .select('id, event_id, category_id, name, is_public')
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return {
+      id: String(data.id),
+      eventId: String(data.event_id),
+      categoryId: String(data.category_id),
+      name: String(data.name),
+      isPublic: Boolean(data.is_public),
+    };
+  }
+
+  async createWaiver(input: {
+    registrationId: string;
+    athleteId?: string | null;
+    regulationAccepted: boolean;
+    lgpdAccepted: boolean;
+    imageUseAccepted: boolean;
+    fitnessAccepted: boolean;
+    signatureUrl?: string | null;
+  }): Promise<WaiverRecord> {
+    const record: WaiverRecord = {
+      id: randomUUID(),
+      registrationId: input.registrationId,
+      athleteId: input.athleteId ?? null,
+      regulationAccepted: input.regulationAccepted,
+      lgpdAccepted: input.lgpdAccepted,
+      imageUseAccepted: input.imageUseAccepted,
+      fitnessDeclarationAccepted: input.fitnessAccepted,
+      signatureUrl: input.signatureUrl ?? null,
+      signedAt: nowIso(),
+    };
+    const supabase = getSupabase();
+    if (!supabase) {
+      waivers.set(record.id, record);
+      return record;
+    }
+    const { data, error } = await supabase
+      .from('waivers')
+      .insert({
+        id: record.id,
+        registration_id: record.registrationId,
+        athlete_id: record.athleteId,
+        regulation_accepted: record.regulationAccepted,
+        lgpd_accepted: record.lgpdAccepted,
+        image_use_accepted: record.imageUseAccepted,
+        fitness_declaration_accepted: record.fitnessDeclarationAccepted,
+        signature_url: record.signatureUrl,
+        signed_at: record.signedAt,
+      })
+      .select('*')
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return {
+      id: String(data.id),
+      registrationId: String(data.registration_id),
+      athleteId: (data.athlete_id as string) ?? null,
+      regulationAccepted: Boolean(data.regulation_accepted),
+      lgpdAccepted: Boolean(data.lgpd_accepted),
+      imageUseAccepted: Boolean(data.image_use_accepted),
+      fitnessDeclarationAccepted: Boolean(data.fitness_declaration_accepted),
+      signatureUrl: (data.signature_url as string) ?? null,
+      signedAt: (data.signed_at as string) ?? null,
     };
   }
 
@@ -1523,20 +1805,16 @@ export class PaymentRepository {
 
     const { data, error } = await supabase
       .from('registration_athletes')
-      .select('role, athlete_id, athletes(id, full_name, cpf)')
+      .select(
+        'role, athlete_id, athletes(id, full_name, cpf, email, phone, birth_date, gender, shirt_size, emergency_name, emergency_phone, medical_restrictions)',
+      )
       .eq('registration_id', registrationId);
     if (error) throw AppError.internal(error.message);
 
     return (data ?? []).map((row) => {
-      const athlete = row.athletes as unknown as {
-        id: string;
-        full_name: string;
-        cpf: string;
-      };
+      const athlete = mapAthleteRow(row.athletes as unknown as Record<string, unknown>);
       return {
-        id: String(athlete.id),
-        fullName: String(athlete.full_name ?? ''),
-        cpf: String(athlete.cpf ?? ''),
+        ...athlete,
         role: (row.role as string) ?? null,
       };
     });

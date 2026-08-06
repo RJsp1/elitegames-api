@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import {
   createPublicRegistrationSchema,
+  publicCategorySlugParamsSchema,
   publicEventSlugParamSchema,
   publicPaymentIdParamSchema,
   publicRegistrationIdParamSchema,
@@ -23,11 +24,21 @@ export class PublicRegistrationController {
     res.status(200).json({ categories });
   }
 
+  async getCategory(req: Request, res: Response): Promise<void> {
+    const { slug, categorySlug } = publicCategorySlugParamsSchema.parse(req.params);
+    const category = await publicRegistrationService.getCategoryBySlugs(slug, categorySlug);
+    res.status(200).json(category);
+  }
+
   async createRegistration(req: Request, res: Response): Promise<void> {
     const body = createPublicRegistrationSchema.parse(req.body);
-    const requestId =
-      body.requestId ??
-      (typeof req.header('X-Request-Id') === 'string' ? req.header('X-Request-Id')! : undefined);
+    const xRequestId = req.header('X-Request-Id');
+    const idempotencyKey = req.header('Idempotency-Key');
+    const headerRequestId =
+      (typeof xRequestId === 'string' && xRequestId.trim()) ||
+      (typeof idempotencyKey === 'string' && idempotencyKey.trim()) ||
+      undefined;
+    const requestId = body.requestId ?? (headerRequestId || undefined);
     const result = await publicRegistrationService.createRegistration(body, {
       requestId,
       supabaseUserId: req.supabaseUserId ?? null,

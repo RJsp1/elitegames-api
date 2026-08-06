@@ -35,6 +35,44 @@ export interface AthleteRecord {
   id: string;
   fullName: string;
   cpf: string;
+  email: string | null;
+  phone: string | null;
+  birthDate: string | null;
+  gender: string | null;
+  shirtSize: string | null;
+  emergencyName: string | null;
+  emergencyPhone: string | null;
+  medicalRestrictions: string | null;
+}
+
+export interface GuardianRecord {
+  id: string;
+  athleteId: string;
+  fullName: string;
+  cpf: string;
+  phone: string;
+  email: string | null;
+  relationship: string;
+}
+
+export interface TeamRecord {
+  id: string;
+  eventId: string;
+  categoryId: string;
+  name: string;
+  isPublic: boolean;
+}
+
+export interface WaiverRecord {
+  id: string;
+  registrationId: string;
+  athleteId: string | null;
+  regulationAccepted: boolean;
+  lgpdAccepted: boolean;
+  imageUseAccepted: boolean;
+  fitnessDeclarationAccepted: boolean;
+  signatureUrl: string | null;
+  signedAt: string | null;
 }
 
 export interface RegistrationAthleteLink {

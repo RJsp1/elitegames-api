@@ -51,46 +51,100 @@ Retorna evento **publicado**.
   "categories": [
     {
       "categoryId": "…",
-      "name": "Open Misto",
+      "slug": "iniciante-masculino",
+      "name": "Iniciante Masculino",
+      "shortDescription": null,
       "description": null,
       "format": "dupla",
-      "gender": "misto",
+      "teamSize": 2,
+      "gender": "masculino",
       "ageRange": "18-40",
       "capacity": 100,
       "occupiedSlots": 10,
       "availableSlots": 90,
-      "currentPrice": "199.90",
-      "priceBatchId": null,
+      "currentPrice": "399.80",
+      "priceBatchId": "…",
       "registrationOpen": true,
-      "soldOut": false
+      "soldOut": false,
+      "notes": null,
+      "videoUrls": []
     }
   ]
 }
 ```
 
-Preço calculado/lido no backend (`currentPrice`).
+Preço calculado/lido no backend (`currentPrice`).  
+`videoUrls` nunca é `null` (array vazio quando ausente).  
+`slug` habilita navegação do frontend em `/categorias/:slug`.
+
+---
+
+## GET `/api/v1/public/events/:eventSlug/categories/:categorySlug`
+
+Detalhe público da categoria (mesmo DTO de um item da lista).
+
+Regras:
+- evento público e dentro da janela de inscrição;
+- categoria do evento, ativa (`is_active`) e `deleted_at` null;
+- preço, lote e ocupação reutilizam a mesma regra da listagem.
+
+**200** — objeto da categoria (não envelopado em `{ categories }`).
+
+**404**
+- `EVENT_NOT_FOUND` — evento inexistente / não público / fora da janela;
+- `CATEGORY_NOT_FOUND` — slug inexistente no evento, inativa, deletada ou de outro evento.
 
 ---
 
 ## POST `/api/v1/public/registrations`
 
-Headers: `Content-Type: application/json`, opcional `X-Request-Id` (idempotência).
+Headers: `Content-Type: application/json`, opcional `X-Request-Id` / `Idempotency-Key`.
 
-Body (não enviar preço):
+Body (não enviar preço — `amount`/`totalPrice`/`price` são **ignorados**):
+
 ```json
 {
   "eventId": "…",
   "categoryId": "…",
-  "athletes": [{ "fullName": "Maria Silva", "cpf": "52998224725" }],
-  "responsible": { "fullName": "João", "phone": "11999999999" },
+  "athletes": [
+    {
+      "fullName": "Maria Silva",
+      "cpf": "52998224725",
+      "email": "maria@example.com",
+      "phone": "11999999999",
+      "birthDate": "1995-05-10",
+      "gender": "feminino",
+      "shirtSize": "M",
+      "emergencyName": "Ana",
+      "emergencyPhone": "11988887777",
+      "medicalNotes": null,
+      "role": "athlete_a"
+    }
+  ],
+  "responsible": {
+    "isAthlete1": true,
+    "fullName": "Maria Silva",
+    "cpf": "52998224725",
+    "email": "maria@example.com",
+    "phone": "11999999999"
+  },
   "teamName": "Time A",
-  "emergencyContact": { "name": "Ana", "phone": "11988887777" },
-  "medicalNotes": null,
+  "waiver": {
+    "regulationAccepted": true,
+    "privacyAccepted": true,
+    "imageUseAccepted": true,
+    "fitnessAccepted": true,
+    "signatureDataUrl": "data:image/png;base64,…"
+  },
   "termsAccepted": true,
   "privacyAccepted": true,
   "requestId": "optional-client-key"
 }
 ```
+
+Compatibilidade legado: `termsAccepted`/`privacyAccepted` no topo; `responsible` sem `isAthlete1`; `athletes` só com `fullName`+`cpf`.
+
+Quantidade de atletas: **sempre** a da categoria no banco (`individual=1`, `dupla=2`, `equipe=team_size`). `categoryFormat`/`teamSize` do cliente são ignorados.
 
 **201**
 ```json
@@ -100,11 +154,11 @@ Body (não enviar preço):
   "status": "draft",
   "amount": "199.90",
   "paymentRequired": true,
-  "accessToken": "<opaco>"
+  "registrationAccessToken": "<opaco>"
 }
 ```
 
-Erros: `EVENT_NOT_FOUND`, `REGISTRATION_CLOSED`, `CATEGORY_NOT_FOUND`, `CATEGORY_SOLD_OUT`, `INVALID_ATHLETE_COUNT`, `INVALID_CPF`, `400` CPF duplicado.
+Erros: `EVENT_NOT_FOUND`, `REGISTRATION_CLOSED`, `CATEGORY_NOT_FOUND`, `CATEGORY_SOLD_OUT`, `INVALID_ATHLETE_COUNT`, `INVALID_CPF`, `400` CPF duplicado / responsável mismatch / assinatura inválida.
 
 ---
 

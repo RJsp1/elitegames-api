@@ -1,10 +1,13 @@
 import rateLimit from 'express-rate-limit';
 
+const skipInTest = () => process.env.NODE_ENV === 'test';
+
 export const globalRateLimit = rateLimit({
   windowMs: 60_000,
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     error: {
       code: 'RATE_LIMIT',
@@ -18,6 +21,7 @@ export const paymentRateLimit = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     error: {
       code: 'RATE_LIMIT',
@@ -31,6 +35,7 @@ export const webhookRateLimit = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
 });
 
 export const adminRateLimit = rateLimit({
@@ -38,6 +43,7 @@ export const adminRateLimit = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     error: {
       code: 'RATE_LIMIT',
@@ -51,6 +57,7 @@ export const publicRateLimit = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     error: {
       code: 'RATE_LIMIT',
@@ -64,6 +71,7 @@ export const publicWriteRateLimit = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: {
     error: {
       code: 'RATE_LIMIT',

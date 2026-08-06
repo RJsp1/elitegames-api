@@ -24,6 +24,12 @@ router.get(
   asyncHandler(async (req, res) => publicRegistrationController.listCategories(req, res)),
 );
 
+router.get(
+  '/events/:slug/categories/:categorySlug',
+  publicRateLimit,
+  asyncHandler(async (req, res) => publicRegistrationController.getCategory(req, res)),
+);
+
 router.post(
   '/registrations',
   publicWriteRateLimit,

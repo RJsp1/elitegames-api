@@ -50,6 +50,15 @@ export function seedEventForTest(
   return record;
 }
 
+/** Normaliza video_urls do banco: null → []; só strings não vazias. */
+export function normalizeVideoUrls(raw: unknown): string[] {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (v): v is string => typeof v === 'string' && v.trim().length > 0,
+  );
+}
+
 export function seedCategoryForTest(
   partial: Partial<PublicCategoryRecord> & {
     id: string;
@@ -64,7 +73,9 @@ export function seedCategoryForTest(
   const record: PublicCategoryRecord = {
     id: partial.id,
     eventId: partial.eventId,
+    slug: partial.slug ?? '',
     name: partial.name,
+    shortDescription: partial.shortDescription ?? null,
     description: partial.description ?? null,
     format: partial.format ?? 'individual',
     gender: partial.gender ?? null,
@@ -78,6 +89,9 @@ export function seedCategoryForTest(
     priceBatchId: partial.priceBatchId ?? null,
     registrationOpen: partial.registrationOpen ?? true,
     soldOut: partial.soldOut ?? false,
+    notes: partial.notes ?? null,
+    videoUrls: normalizeVideoUrls(partial.videoUrls),
+    orderIndex: partial.orderIndex ?? 0,
     isActive: partial.isActive ?? true,
     deletedAt: partial.deletedAt ?? null,
   };
@@ -338,7 +352,9 @@ export class CatalogRepository {
     return {
       id,
       eventId,
+      slug: String(row.slug ?? ''),
       name: String(row.name ?? ''),
+      shortDescription: (row.short_description as string) ?? null,
       description: (row.description as string) ?? null,
       format,
       gender: (row.gender as string) ?? null,
@@ -352,6 +368,9 @@ export class CatalogRepository {
       priceBatchId: batch?.id ?? null,
       registrationOpen,
       soldOut,
+      notes: (row.notes as string) ?? null,
+      videoUrls: normalizeVideoUrls(row.video_urls),
+      orderIndex: Number(row.order_index ?? 0),
       isActive,
       deletedAt,
     };
@@ -461,6 +480,60 @@ export class CatalogRepository {
     }
     if (!row) return null;
     const batches = await this.listPriceBatchesByEventId(String(row.event_id));
+    return this.hydrateCategory(row, batches);
+  }
+
+  /**
+   * Categoria pública por slug dentro do evento.
+   * Exige ativa + deleted_at null; preço/ocupação via mesma hidratação da lista.
+   */
+  async findActiveCategoryByEventAndSlug(
+    eventId: string,
+    categorySlug: string,
+  ): Promise<PublicCategoryRecord | null> {
+    const batches = await this.listPriceBatchesByEventId(eventId);
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      const base = Array.from(categories.values()).find(
+        (c) =>
+          c.eventId === eventId &&
+          c.slug === categorySlug &&
+          c.isActive &&
+          c.deletedAt == null,
+      );
+      if (!base) return null;
+      return this.hydrateMemoryCategory(base, batches);
+    }
+
+    const primary = await supabase
+      .from('categories')
+      .select('*')
+      .eq('event_id', eventId)
+      .eq('slug', categorySlug)
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    let row: Record<string, unknown> | null = null;
+    if (!primary.error && primary.data) {
+      row = primary.data as Record<string, unknown>;
+    } else {
+      const alt = await supabase
+        .from('event_categories')
+        .select('*')
+        .eq('event_id', eventId)
+        .eq('slug', categorySlug)
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (alt.error) {
+        if (primary.error) throw AppError.internal(primary.error.message);
+        throw AppError.internal(alt.error.message);
+      }
+      row = (alt.data as Record<string, unknown>) ?? null;
+    }
+    if (!row) return null;
     return this.hydrateCategory(row, batches);
   }
 

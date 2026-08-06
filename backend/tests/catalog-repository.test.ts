@@ -9,6 +9,7 @@ import {
   calculatePriceCentsFromBatch,
   selectCurrentPriceBatch,
   isEventPubliclyEligible,
+  normalizeVideoUrls,
 } from '../src/repositories/catalog.repository.js';
 import {
   clearPaymentMemoryStore,
@@ -341,5 +342,14 @@ describe('catalog.repository — schema Lovable', () => {
     const dupla = list.find((c) => c.id === dup)!;
     expect(individual.priceCents).toBe(19990);
     expect(dupla.priceCents).toBe(39980);
+  });
+
+  it('normalizeVideoUrls: null → []; filtra não-string e vazios', () => {
+    expect(normalizeVideoUrls(null)).toEqual([]);
+    expect(normalizeVideoUrls(undefined)).toEqual([]);
+    expect(normalizeVideoUrls('x')).toEqual([]);
+    expect(
+      normalizeVideoUrls(['a', '', '  ', 1, null, 'b.mp4', { u: 1 }]),
+    ).toEqual(['a', 'b.mp4']);
   });
 });
