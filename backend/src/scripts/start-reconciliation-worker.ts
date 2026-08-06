@@ -15,6 +15,77 @@ let timer: NodeJS.Timeout | null = null;
 let consecutiveFailures = 0;
 let workerStartedAt = new Date().toISOString();
 
+/** Controle de frequência da expiração (independente do intervalo de reconciliação). */
+let lastExpirationRunAt = 0;
+let expirationRunning = false;
+
+/**
+ * Executa o ciclo de expiração no máximo uma vez por PAYMENT_EXPIRATION_INTERVAL_MS.
+ * Primeiro ciclo do worker pode rodar imediatamente (lastExpirationRunAt === 0).
+ * Retorna true se o ciclo de fato executou.
+ */
+export async function maybeRunExpirationAfterReconciliation(
+  now = Date.now(),
+): Promise<boolean> {
+  const env = loadEnv();
+
+  if (!env.PAYMENT_EXPIRATION_ENABLED) {
+    return false;
+  }
+
+  const intervalMs = env.PAYMENT_EXPIRATION_INTERVAL_MS;
+
+  if (expirationRunning) {
+    pixLog('debug', 'Expiração pulada: ciclo já em andamento', {
+      operation: 'payment_expiration_cycle',
+      provider: 'sicredi',
+      intervalMs,
+    });
+    return false;
+  }
+
+  if (lastExpirationRunAt > 0 && now - lastExpirationRunAt < intervalMs) {
+    pixLog('debug', 'Expiração ainda não agendada', {
+      operation: 'payment_expiration_cycle',
+      provider: 'sicredi',
+      intervalMs,
+      elapsedMs: now - lastExpirationRunAt,
+      remainingMs: intervalMs - (now - lastExpirationRunAt),
+    });
+    return false;
+  }
+
+  expirationRunning = true;
+  // Marca o início para evitar reentrância se outro ciclo de reconciliação
+  // chegar enquanto a expiração ainda roda; falhas não bloqueiam o futuro.
+  lastExpirationRunAt = now;
+
+  try {
+    await paymentExpirationService.runCycle({
+      intervalMs,
+    });
+    return true;
+  } catch (expireErr) {
+    pixLog('error', 'Falha no ciclo de expiração pós-reconciliação', {
+      operation: 'payment_expiration_cycle',
+      provider: 'sicredi',
+      errorMessage:
+        expireErr instanceof Error ? expireErr.message.slice(0, 300) : 'unknown',
+      errorCode: 'unknown_error',
+    });
+    return false;
+  } finally {
+    expirationRunning = false;
+  }
+}
+
+export function getExpirationWorkerState(): {
+  lastExpirationRunAt: number;
+  expirationRunning: boolean;
+} {
+  return { lastExpirationRunAt, expirationRunning };
+}
+
 export async function runOnce(intervalMs: number, batchSize?: number): Promise<void> {
   const startedAt = Date.now();
   const cycleStartedAt = new Date().toISOString();
@@ -90,22 +161,8 @@ export async function runOnce(intervalMs: number, batchSize?: number): Promise<v
       batchSize: summary.batchSize,
     });
 
-    // Expiração integrada após reconciliação (sem worker PM2 extra).
-    if (env.PAYMENT_EXPIRATION_ENABLED) {
-      try {
-        await paymentExpirationService.runCycle({
-          intervalMs: env.PAYMENT_EXPIRATION_INTERVAL_MS,
-        });
-      } catch (expireErr) {
-        pixLog('error', 'Falha no ciclo de expiração pós-reconciliação', {
-          operation: 'payment_expiration_cycle',
-          provider: 'sicredi',
-          errorMessage:
-            expireErr instanceof Error ? expireErr.message.slice(0, 300) : 'unknown',
-          errorCode: 'unknown_error',
-        });
-      }
-    }
+    // Expiração integrada, mas limitada a PAYMENT_EXPIRATION_INTERVAL_MS.
+    await maybeRunExpirationAfterReconciliation();
   } catch (err) {
     consecutiveFailures += 1;
     writeReconciliationHeartbeat({
@@ -151,6 +208,8 @@ export function resetReconciliationWorkerState(): void {
   shuttingDown = false;
   consecutiveFailures = 0;
   workerStartedAt = new Date().toISOString();
+  lastExpirationRunAt = 0;
+  expirationRunning = false;
   if (timer) {
     clearTimeout(timer);
     timer = null;
