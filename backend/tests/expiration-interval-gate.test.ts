@@ -1,21 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { resetEnvCache, loadEnv } from '../src/config/env.js';
 import { paymentExpirationService } from '../src/services/payment/payment-expiration.service.js';
 import {
-  maybeRunExpirationAfterReconciliation,
+  maybeRunExpirationCycle,
   resetReconciliationWorkerState,
   getExpirationWorkerState,
 } from '../src/scripts/start-reconciliation-worker.js';
 
-describe('gate de intervalo da expiração no worker', () => {
+const emptySummary = {
+  operation: 'payment_expiration_cycle' as const,
+  provider: 'mock' as const,
+  durationMs: 1,
+  total: 0,
+  expired: 0,
+  confirmedBeforeExpire: 0,
+  cancelled: 0,
+  skipped: 0,
+  errors: 0,
+  queried: 0,
+  averageQueryMs: 0,
+  minQueryMs: 0,
+  maxQueryMs: 0,
+  batchSize: 50,
+  intervalMs: 60_000,
+};
+
+describe('maybeRunExpirationCycle', () => {
   beforeEach(() => {
-    process.env.PAYMENT_PROVIDER = 'mock';
-    process.env.NODE_ENV = 'test';
-    process.env.PAYMENT_EXPIRATION_ENABLED = 'true';
-    process.env.PAYMENT_EXPIRATION_INTERVAL_MS = '60000';
-    process.env.PAYMENT_RECONCILIATION_INTERVAL_MS = '10000';
-    resetEnvCache();
-    loadEnv();
     resetReconciliationWorkerState();
     paymentExpirationService.resetCycleLock();
     vi.restoreAllMocks();
@@ -23,48 +33,47 @@ describe('gate de intervalo da expiração no worker', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     resetReconciliationWorkerState();
-    paymentExpirationService.resetCycleLock();
   });
 
-  it('em 6 ciclos de 10s, expira só no primeiro e após completar 60s', async () => {
-    const runSpy = vi.spyOn(paymentExpirationService, 'runCycle').mockResolvedValue({
-      operation: 'payment_expiration_cycle',
-      provider: 'mock',
-      durationMs: 1,
-      total: 0,
-      expired: 0,
-      confirmedBeforeExpire: 0,
-      cancelled: 0,
-      skipped: 0,
-      errors: 0,
-      queried: 0,
-      averageQueryMs: 0,
-      minQueryMs: 0,
-      maxQueryMs: 0,
-      batchSize: 50,
-      intervalMs: 60_000,
-    });
+  it('primeiro ciclo executa expiração', async () => {
+    const runSpy = vi.spyOn(paymentExpirationService, 'runCycle').mockResolvedValue(emptySummary);
+    vi.setSystemTime(1_000_000);
 
-    const t0 = 1_000_000;
-    // 6 ciclos de reconciliação a cada 10s: t0, +10, +20, +30, +40, +50
-    const reconTimes = [0, 10, 20, 30, 40, 50].map((s) => t0 + s * 1000);
+    await maybeRunExpirationCycle(true, 60_000);
 
-    const outcomes: boolean[] = [];
-    for (const now of reconTimes) {
-      outcomes.push(await maybeRunExpirationAfterReconciliation(now));
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(getExpirationWorkerState().lastExpirationRunAt).toBe(1_000_000);
+  });
+
+  it('ciclos antes de 60s não executam novamente', async () => {
+    const runSpy = vi.spyOn(paymentExpirationService, 'runCycle').mockResolvedValue(emptySummary);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+
+    await maybeRunExpirationCycle(true, 60_000);
+    for (const offset of [10_000, 20_000, 30_000, 40_000, 50_000]) {
+      vi.setSystemTime(1_000_000 + offset);
+      await maybeRunExpirationCycle(true, 60_000);
     }
 
-    expect(outcomes).toEqual([true, false, false, false, false, false]);
     expect(runSpy).toHaveBeenCalledTimes(1);
+  });
 
-    // No 7º ciclo (+60s) a expiração volta a rodar
-    const ranAgain = await maybeRunExpirationAfterReconciliation(t0 + 60_000);
-    expect(ranAgain).toBe(true);
+  it('após 60s executa', async () => {
+    const runSpy = vi.spyOn(paymentExpirationService, 'runCycle').mockResolvedValue(emptySummary);
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+
+    await maybeRunExpirationCycle(true, 60_000);
+    vi.setSystemTime(1_000_000 + 60_000);
+    await maybeRunExpirationCycle(true, 60_000);
+
     expect(runSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('não roda simultaneamente duas vezes', async () => {
+  it('overlap não executa', async () => {
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => {
       release = resolve;
@@ -72,81 +81,49 @@ describe('gate de intervalo da expiração no worker', () => {
 
     const runSpy = vi.spyOn(paymentExpirationService, 'runCycle').mockImplementation(async () => {
       await barrier;
-      return {
-        operation: 'payment_expiration_cycle',
-        provider: 'mock',
-        durationMs: 1,
-        total: 0,
-        expired: 0,
-        confirmedBeforeExpire: 0,
-        cancelled: 0,
-        skipped: 0,
-        errors: 0,
-        queried: 0,
-        averageQueryMs: 0,
-        minQueryMs: 0,
-        maxQueryMs: 0,
-        batchSize: 50,
-        intervalMs: 60_000,
-      };
+      return emptySummary;
     });
 
-    const first = maybeRunExpirationAfterReconciliation(1_000_000);
-    // Enquanto a primeira ainda roda
+    vi.setSystemTime(2_000_000);
+    const first = maybeRunExpirationCycle(true, 60_000);
     await Promise.resolve();
     expect(getExpirationWorkerState().expirationRunning).toBe(true);
 
-    const second = await maybeRunExpirationAfterReconciliation(1_000_000);
-    expect(second).toBe(false);
+    await maybeRunExpirationCycle(true, 60_000);
+    expect(runSpy).toHaveBeenCalledTimes(1);
 
     release();
-    expect(await first).toBe(true);
-    expect(runSpy).toHaveBeenCalledTimes(1);
+    await first;
     expect(getExpirationWorkerState().expirationRunning).toBe(false);
   });
 
-  it('falha libera o lock e permite ciclo futuro', async () => {
-    const runSpy = vi
-      .spyOn(paymentExpirationService, 'runCycle')
-      .mockRejectedValueOnce(new Error('boom'))
-      .mockResolvedValueOnce({
-        operation: 'payment_expiration_cycle',
-        provider: 'mock',
-        durationMs: 1,
-        total: 0,
-        expired: 0,
-        confirmedBeforeExpire: 0,
-        cancelled: 0,
-        skipped: 0,
-        errors: 0,
-        queried: 0,
-        averageQueryMs: 0,
-        minQueryMs: 0,
-        maxQueryMs: 0,
-        batchSize: 50,
-        intervalMs: 60_000,
-      });
+  it('erro libera o lock', async () => {
+    vi.spyOn(paymentExpirationService, 'runCycle').mockRejectedValueOnce(new Error('boom'));
+    vi.setSystemTime(3_000_000);
 
-    const t0 = 2_000_000;
-    expect(await maybeRunExpirationAfterReconciliation(t0)).toBe(false);
+    await maybeRunExpirationCycle(true, 60_000);
+
     expect(getExpirationWorkerState().expirationRunning).toBe(false);
+    expect(getExpirationWorkerState().lastExpirationRunAt).toBe(3_000_000);
+  });
 
-    // Intervalo ainda não passou → não reexecuta
-    expect(await maybeRunExpirationAfterReconciliation(t0 + 10_000)).toBe(false);
+  it('reset limpa estado', async () => {
+    vi.spyOn(paymentExpirationService, 'runCycle').mockResolvedValue(emptySummary);
+    vi.setSystemTime(4_000_000);
+    await maybeRunExpirationCycle(true, 60_000);
 
-    // Após intervalo, pode executar de novo
-    expect(await maybeRunExpirationAfterReconciliation(t0 + 60_000)).toBe(true);
-    expect(runSpy).toHaveBeenCalledTimes(2);
+    expect(getExpirationWorkerState().lastExpirationRunAt).toBeGreaterThan(0);
+
+    resetReconciliationWorkerState();
+    expect(getExpirationWorkerState()).toEqual({
+      lastExpirationRunAt: 0,
+      expirationRunning: false,
+    });
   });
 
   it('disabled não executa', async () => {
-    process.env.PAYMENT_EXPIRATION_ENABLED = 'false';
-    resetEnvCache();
-    loadEnv();
-
     const runSpy = vi.spyOn(paymentExpirationService, 'runCycle');
-
-    expect(await maybeRunExpirationAfterReconciliation(Date.now())).toBe(false);
+    await maybeRunExpirationCycle(false, 60_000);
     expect(runSpy).not.toHaveBeenCalled();
   });
 });
