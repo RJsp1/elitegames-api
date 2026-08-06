@@ -14,9 +14,11 @@ let timer: NodeJS.Timeout | null = null;
 let consecutiveFailures = 0;
 let workerStartedAt = new Date().toISOString();
 
-export async function runOnce(intervalMs: number): Promise<void> {
+export async function runOnce(intervalMs: number, batchSize?: number): Promise<void> {
   const startedAt = Date.now();
   const cycleStartedAt = new Date().toISOString();
+  const env = loadEnv();
+  const resolvedBatchSize = batchSize ?? env.PAYMENT_RECONCILIATION_BATCH_SIZE;
 
   writeReconciliationHeartbeat({
     startedAt: workerStartedAt,
@@ -40,7 +42,11 @@ export async function runOnce(intervalMs: number): Promise<void> {
 
     const durationMs = Date.now() - startedAt;
     const metrics = sicrediReconciliationService.getLastCycleMetrics();
-    const summary = summarizeReconciliationResults(results, durationMs, metrics);
+    const summary = summarizeReconciliationResults(results, durationMs, {
+      ...metrics,
+      pollingIntervalMs: intervalMs,
+      batchSize: resolvedBatchSize,
+    });
 
     if (summary.total > 0 && summary.errors === summary.total) {
       consecutiveFailures += 1;
@@ -79,6 +85,8 @@ export async function runOnce(intervalMs: number): Promise<void> {
       averageQueryMs: summary.averageQueryMs,
       maxQueryMs: summary.maxQueryMs,
       minQueryMs: summary.minQueryMs,
+      pollingIntervalMs: summary.pollingIntervalMs,
+      batchSize: summary.batchSize,
     });
   } catch (err) {
     consecutiveFailures += 1;

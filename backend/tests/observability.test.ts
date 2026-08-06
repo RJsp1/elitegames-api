@@ -91,6 +91,8 @@ describe('observabilidade Pix Sicredi', () => {
         skipped: 1,
         tokenRefreshes: 1,
         queryDurationsMs: [100, 200],
+        pollingIntervalMs: 10_000,
+        batchSize: 50,
       },
     );
 
@@ -101,7 +103,38 @@ describe('observabilidade Pix Sicredi', () => {
     expect(summary.averageQueryMs).toBe(150);
     expect(summary.maxQueryMs).toBe(200);
     expect(summary.minQueryMs).toBe(100);
+    expect(summary.pollingIntervalMs).toBe(10_000);
+    expect(summary.batchSize).toBe(50);
     expect(summary.confirmed).toBe(1);
+  });
+
+  it('resumo com queried=0 usa 0 em average/min/max e schema estável', () => {
+    const summary = summarizeReconciliationResults([], 12, {
+      queried: 0,
+      skipped: 0,
+      tokenRefreshes: 0,
+      queryDurationsMs: [],
+      pollingIntervalMs: 10_000,
+      batchSize: 50,
+    });
+
+    expect(summary).toEqual({
+      total: 0,
+      confirmed: 0,
+      pending: 0,
+      cancelled: 0,
+      errors: 0,
+      mismatches: 0,
+      durationMs: 12,
+      queried: 0,
+      skipped: 0,
+      tokenRefreshes: 0,
+      averageQueryMs: 0,
+      maxQueryMs: 0,
+      minQueryMs: 0,
+      pollingIntervalMs: 10_000,
+      batchSize: 50,
+    });
   });
 
   it('classifica erros HTTP e timeout', () => {

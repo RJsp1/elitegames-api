@@ -135,7 +135,10 @@ describe('Sicredi reconciliation polling', () => {
       entityId: seeded.paymentId,
     });
 
-    const summary = summarizeReconciliationResults([result], 420);
+    const summary = summarizeReconciliationResults([result], 420, {
+      pollingIntervalMs: 10_000,
+      batchSize: 50,
+    });
     expect(summary).toEqual({
       total: 1,
       confirmed: 1,
@@ -147,9 +150,11 @@ describe('Sicredi reconciliation polling', () => {
       queried: 0,
       skipped: 0,
       tokenRefreshes: 0,
-      averageQueryMs: null,
-      maxQueryMs: null,
-      minQueryMs: null,
+      averageQueryMs: 0,
+      maxQueryMs: 0,
+      minQueryMs: 0,
+      pollingIntervalMs: 10_000,
+      batchSize: 50,
     });
 
     const payment = await paymentRepository.findPaymentById(seeded.paymentId);

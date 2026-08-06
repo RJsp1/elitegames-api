@@ -54,9 +54,11 @@ export interface ReconciliationCycleSummary {
   queried: number;
   skipped: number;
   tokenRefreshes: number;
-  averageQueryMs: number | null;
-  maxQueryMs: number | null;
-  minQueryMs: number | null;
+  averageQueryMs: number;
+  maxQueryMs: number;
+  minQueryMs: number;
+  pollingIntervalMs: number;
+  batchSize: number;
 }
 
 export function classifySicrediCobStatus(rawStatus: string | undefined | null): SicrediCobClassification {
@@ -80,7 +82,10 @@ export function classifySicrediCobStatus(rawStatus: string | undefined | null): 
 export function summarizeReconciliationResults(
   results: ReconciliationResult[],
   durationMs: number,
-  metrics?: Partial<ReconciliationCycleMetrics>,
+  metrics?: Partial<ReconciliationCycleMetrics> & {
+    pollingIntervalMs?: number;
+    batchSize?: number;
+  },
 ): ReconciliationCycleSummary {
   const queryDurationsMs = metrics?.queryDurationsMs ?? [];
   const queried = metrics?.queried ?? queryDurationsMs.length;
@@ -93,6 +98,13 @@ export function summarizeReconciliationResults(
         r.action === 'skipped_unknown',
     ).length;
 
+  const hasQueries = queried > 0 && queryDurationsMs.length > 0;
+  const averageQueryMs = hasQueries
+    ? Math.round(queryDurationsMs.reduce((sum, value) => sum + value, 0) / queryDurationsMs.length)
+    : 0;
+  const maxQueryMs = hasQueries ? Math.max(...queryDurationsMs) : 0;
+  const minQueryMs = hasQueries ? Math.min(...queryDurationsMs) : 0;
+
   return {
     total: results.length,
     confirmed: results.filter((r) => r.action === 'confirmed').length,
@@ -104,14 +116,11 @@ export function summarizeReconciliationResults(
     queried,
     skipped,
     tokenRefreshes: metrics?.tokenRefreshes ?? 0,
-    averageQueryMs:
-      queryDurationsMs.length > 0
-        ? Math.round(
-            queryDurationsMs.reduce((sum, value) => sum + value, 0) / queryDurationsMs.length,
-          )
-        : null,
-    maxQueryMs: queryDurationsMs.length > 0 ? Math.max(...queryDurationsMs) : null,
-    minQueryMs: queryDurationsMs.length > 0 ? Math.min(...queryDurationsMs) : null,
+    averageQueryMs,
+    maxQueryMs,
+    minQueryMs,
+    pollingIntervalMs: metrics?.pollingIntervalMs ?? 0,
+    batchSize: metrics?.batchSize ?? results.length,
   };
 }
 
