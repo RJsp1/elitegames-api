@@ -4,12 +4,14 @@ import paymentRoutes, { devPaymentRouter } from './payment.routes.js';
 import webhookRoutes from './webhook.routes.js';
 import reconciliationRoutes from './reconciliation.routes.js';
 import adminRoutes from './admin.routes.js';
+import publicRoutes from './public.routes.js';
 import { getEnv } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
 
 const router = Router();
 
 router.use('/health', healthRoutes);
+router.use('/api/v1/public', publicRoutes);
 router.use('/api/v1/payments', paymentRoutes);
 router.use('/api/v1/webhooks', webhookRoutes);
 router.use('/api/v1/reconciliation', reconciliationRoutes);

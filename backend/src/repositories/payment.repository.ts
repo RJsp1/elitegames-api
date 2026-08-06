@@ -1290,6 +1290,283 @@ export class PaymentRepository {
     };
   }
 
+  async findAthleteByCpf(cpfDigits: string): Promise<AthleteRecord | null> {
+    const digits = cpfDigits.replace(/\D/g, '');
+    const supabase = getSupabase();
+    if (!supabase) {
+      for (const a of athletes.values()) {
+        if (a.cpf.replace(/\D/g, '') === digits) return a;
+      }
+      return null;
+    }
+    const { data, error } = await supabase
+      .from('athletes')
+      .select('id, full_name, cpf')
+      .eq('cpf', digits)
+      .maybeSingle();
+    if (error) throw AppError.internal(error.message);
+    if (!data) return null;
+    return {
+      id: String(data.id),
+      fullName: String(data.full_name ?? ''),
+      cpf: String(data.cpf ?? ''),
+    };
+  }
+
+  async createAthlete(input: {
+    fullName: string;
+    cpf: string;
+  }): Promise<AthleteRecord> {
+    const record: AthleteRecord = {
+      id: randomUUID(),
+      fullName: input.fullName.trim(),
+      cpf: input.cpf.replace(/\D/g, ''),
+    };
+    const supabase = getSupabase();
+    if (!supabase) {
+      athletes.set(record.id, record);
+      return record;
+    }
+    const { data, error } = await supabase
+      .from('athletes')
+      .insert({
+        id: record.id,
+        full_name: record.fullName,
+        cpf: record.cpf,
+      })
+      .select('id, full_name, cpf')
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return {
+      id: String(data.id),
+      fullName: String(data.full_name ?? ''),
+      cpf: String(data.cpf ?? ''),
+    };
+  }
+
+  async createRegistration(input: {
+    eventId: string;
+    categoryId: string;
+    format: string;
+    totalPrice: number;
+    teamId?: string | null;
+    status?: RegistrationStatus;
+    registrationNumber?: string;
+    reservationId?: string | null;
+  }): Promise<RegistrationRecord> {
+    const now = nowIso();
+    const record: RegistrationRecord = {
+      id: randomUUID(),
+      eventId: input.eventId,
+      categoryId: input.categoryId,
+      teamId: input.teamId ?? null,
+      registrationNumber:
+        input.registrationNumber ?? `INS-${Date.now().toString(36).toUpperCase()}`,
+      format: input.format,
+      totalPrice: input.totalPrice,
+      status: input.status ?? 'draft',
+      reservationId: input.reservationId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      registrations.set(record.id, record);
+      return record;
+    }
+
+    const { data, error } = await supabase
+      .from('registrations')
+      .insert({
+        id: record.id,
+        event_id: record.eventId,
+        category_id: record.categoryId,
+        team_id: record.teamId,
+        registration_number: record.registrationNumber,
+        format: record.format,
+        total_price: record.totalPrice,
+        status: record.status,
+        reservation_id: record.reservationId,
+        created_at: record.createdAt,
+        updated_at: record.updatedAt,
+      })
+      .select('*')
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return mapRegistration(data as Record<string, unknown>);
+  }
+
+  async linkRegistrationAthlete(input: {
+    registrationId: string;
+    athleteId: string;
+    role?: string | null;
+  }): Promise<RegistrationAthleteLink> {
+    const record: RegistrationAthleteLink = {
+      id: randomUUID(),
+      registrationId: input.registrationId,
+      athleteId: input.athleteId,
+      role: input.role ?? null,
+    };
+    const supabase = getSupabase();
+    if (!supabase) {
+      registrationAthletes.set(record.id, record);
+      return record;
+    }
+    const { data, error } = await supabase
+      .from('registration_athletes')
+      .insert({
+        id: record.id,
+        registration_id: record.registrationId,
+        athlete_id: record.athleteId,
+        role: record.role,
+      })
+      .select('*')
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return {
+      id: String(data.id),
+      registrationId: String(data.registration_id),
+      athleteId: String(data.athlete_id),
+      role: (data.role as string) ?? null,
+    };
+  }
+
+  async createReservation(input: {
+    registrationId: string;
+    categoryId: string | null;
+    quantity: number;
+    expiresAt?: string | null;
+    status?: ReservationStatus;
+  }): Promise<ReservationRecord> {
+    const now = nowIso();
+    const record: ReservationRecord = {
+      id: randomUUID(),
+      registrationId: input.registrationId,
+      categoryId: input.categoryId,
+      paymentId: null,
+      quantity: input.quantity,
+      status: input.status ?? 'active',
+      reservedAt: now,
+      expiresAt: input.expiresAt ?? null,
+      confirmedAt: null,
+      releasedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      reservations.set(record.id, record);
+      const reg = registrations.get(input.registrationId);
+      if (reg) {
+        registrations.set(reg.id, { ...reg, reservationId: record.id, updatedAt: now });
+      }
+      return record;
+    }
+
+    const { data, error } = await supabase
+      .from('registration_reservations')
+      .insert({
+        id: record.id,
+        registration_id: record.registrationId,
+        category_id: record.categoryId,
+        payment_id: null,
+        quantity: record.quantity,
+        status: record.status,
+        reserved_at: record.reservedAt,
+        expires_at: record.expiresAt,
+        created_at: record.createdAt,
+        updated_at: record.updatedAt,
+      })
+      .select('*')
+      .single();
+    if (error) throw AppError.internal(error.message);
+
+    await supabase
+      .from('registrations')
+      .update({ reservation_id: record.id, updated_at: now })
+      .eq('id', input.registrationId);
+
+    return {
+      id: String(data.id),
+      registrationId: String(data.registration_id),
+      categoryId: (data.category_id as string) ?? null,
+      paymentId: (data.payment_id as string) ?? null,
+      quantity: Number(data.quantity ?? 1),
+      status: data.status as ReservationStatus,
+      reservedAt: (data.reserved_at as string) ?? null,
+      expiresAt: (data.expires_at as string) ?? null,
+      confirmedAt: (data.confirmed_at as string) ?? null,
+      releasedAt: (data.released_at as string) ?? null,
+      createdAt: String(data.created_at),
+      updatedAt: String(data.updated_at),
+    };
+  }
+
+  async listAthletesForRegistration(
+    registrationId: string,
+  ): Promise<Array<AthleteRecord & { role: string | null }>> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      const links = Array.from(registrationAthletes.values()).filter(
+        (l) => l.registrationId === registrationId,
+      );
+      return links
+        .map((l) => {
+          const athlete = athletes.get(l.athleteId);
+          if (!athlete) return null;
+          return { ...athlete, role: l.role };
+        })
+        .filter((a): a is AthleteRecord & { role: string | null } => a != null);
+    }
+
+    const { data, error } = await supabase
+      .from('registration_athletes')
+      .select('role, athlete_id, athletes(id, full_name, cpf)')
+      .eq('registration_id', registrationId);
+    if (error) throw AppError.internal(error.message);
+
+    return (data ?? []).map((row) => {
+      const athlete = row.athletes as unknown as {
+        id: string;
+        full_name: string;
+        cpf: string;
+      };
+      return {
+        id: String(athlete.id),
+        fullName: String(athlete.full_name ?? ''),
+        cpf: String(athlete.cpf ?? ''),
+        role: (row.role as string) ?? null,
+      };
+    });
+  }
+
+  /**
+   * Conta inscrições que reservam vaga na categoria.
+   * Status: pending_payment | paid | confirmed.
+   * Não conta draft / cancelled / expired / refunded / waitlist.
+   */
+  async countOccupyingRegistrationsByCategoryId(categoryId: string): Promise<number> {
+    const occupying = new Set(['pending_payment', 'paid', 'confirmed']);
+    const supabase = getSupabase();
+    if (!supabase) {
+      let count = 0;
+      for (const reg of registrations.values()) {
+        if (reg.categoryId === categoryId && occupying.has(reg.status)) count += 1;
+      }
+      return count;
+    }
+
+    const { count, error } = await supabase
+      .from('registrations')
+      .select('id', { count: 'exact', head: true })
+      .eq('category_id', categoryId)
+      .in('status', ['pending_payment', 'paid', 'confirmed']);
+    if (error) throw AppError.internal(error.message);
+    return count ?? 0;
+  }
+
   /** Lista completa em memória / amostra ampla no Supabase para agregações admin. */
   async listAllPaymentsForAdmin(limit = 5000): Promise<PaymentRecord[]> {
     const supabase = getSupabase();

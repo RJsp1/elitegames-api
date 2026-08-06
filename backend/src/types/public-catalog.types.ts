@@ -1,0 +1,94 @@
+export type EventPublicationStatus =
+  | 'draft'
+  | 'published'
+  | 'registration_open'
+  | 'open'
+  | 'closed'
+  | 'cancelled'
+  | 'archived'
+  | string;
+
+export interface PublicEventRecord {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  location: string | null;
+  registrationStart: string | null;
+  registrationEnd: string | null;
+  status: EventPublicationStatus;
+  regulationUrl: string | null;
+  bannerUrl: string | null;
+  /** true quando elegível às regras de evento público (status + is_public + janela). */
+  published: boolean;
+  isPublic: boolean;
+  deletedAt: string | null;
+}
+
+export interface PublicPriceBatchRecord {
+  id: string;
+  eventId: string;
+  name: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  pricePerAthlete: number | null;
+  pricePerTeam: number | null;
+  slots: number | null;
+  categoryIds: string[] | null;
+  isActive: boolean;
+  orderIndex: number;
+  deletedAt: string | null;
+  createdAt: string | null;
+}
+
+export interface PublicCategoryRecord {
+  id: string;
+  eventId: string;
+  name: string;
+  description: string | null;
+  format: 'individual' | 'dupla' | 'equipe' | string;
+  gender: string | null;
+  ageMin: number | null;
+  ageMax: number | null;
+  /** null = capacidade ilimitada (slots null no schema). */
+  capacity: number | null;
+  occupiedSlots: number;
+  availableSlots: number | null;
+  teamSize: number;
+  priceCents: number;
+  priceBatchId: string | null;
+  registrationOpen: boolean;
+  soldOut: boolean;
+  isActive: boolean;
+  deletedAt: string | null;
+}
+
+export interface RegistrationAccessTokenRecord {
+  id: string;
+  registrationId: string;
+  tokenHash: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface PublicIdempotencyRecord {
+  id: string;
+  scope: string;
+  requestId: string;
+  resourceType: string;
+  resourceId: string;
+  responseSnapshot: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** Status de registrations que efetivamente ocupam vaga. */
+export const OCCUPYING_REGISTRATION_STATUSES = [
+  'pending_payment',
+  'paid',
+  'confirmed',
+] as const;
+
+export const PUBLIC_EVENT_STATUSES = ['published', 'registration_open', 'open'] as const;

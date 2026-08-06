@@ -45,3 +45,29 @@ export const adminRateLimit = rateLimit({
     },
   },
 });
+
+export const publicRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMIT',
+      message: 'Limite de requisições públicas excedido.',
+    },
+  },
+});
+
+export const publicWriteRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMIT',
+      message: 'Limite de criação/reemissão pública excedido.',
+    },
+  },
+});
