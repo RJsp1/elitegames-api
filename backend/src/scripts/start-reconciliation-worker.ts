@@ -4,6 +4,7 @@ import {
   sicrediReconciliationService,
   summarizeReconciliationResults,
 } from '../services/sicredi/sicredi-reconciliation.service.js';
+import { paymentExpirationService } from '../services/payment/payment-expiration.service.js';
 import {
   writeReconciliationHeartbeat,
 } from '../utils/reconciliation-heartbeat.js';
@@ -88,6 +89,23 @@ export async function runOnce(intervalMs: number, batchSize?: number): Promise<v
       pollingIntervalMs: summary.pollingIntervalMs,
       batchSize: summary.batchSize,
     });
+
+    // Expiração integrada após reconciliação (sem worker PM2 extra).
+    if (env.PAYMENT_EXPIRATION_ENABLED) {
+      try {
+        await paymentExpirationService.runCycle({
+          intervalMs: env.PAYMENT_EXPIRATION_INTERVAL_MS,
+        });
+      } catch (expireErr) {
+        pixLog('error', 'Falha no ciclo de expiração pós-reconciliação', {
+          operation: 'payment_expiration_cycle',
+          provider: 'sicredi',
+          errorMessage:
+            expireErr instanceof Error ? expireErr.message.slice(0, 300) : 'unknown',
+          errorCode: 'unknown_error',
+        });
+      }
+    }
   } catch (err) {
     consecutiveFailures += 1;
     writeReconciliationHeartbeat({
@@ -189,6 +207,7 @@ export async function runReconciliationWorker(): Promise<void> {
     intervalMs,
     batchSize: env.PAYMENT_RECONCILIATION_BATCH_SIZE,
     concurrency: env.PAYMENT_RECONCILIATION_CONCURRENCY,
+    expirationEnabled: env.PAYMENT_EXPIRATION_ENABLED,
     operation: 'reconciliation_cycle',
   });
 

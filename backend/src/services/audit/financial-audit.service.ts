@@ -41,6 +41,7 @@ export class FinancialAuditService {
     amount: number;
     expiresAt: string | null;
     isCurrent: boolean;
+    reason?: FinancialAuditOrigin;
   }): Promise<WriteFinancialEventResult> {
     return auditLogRepository.writeFinancialEvent({
       action: 'PIX_CHARGE_CREATED',
@@ -54,7 +55,7 @@ export class FinancialAuditService {
         expires_at: input.expiresAt,
         is_current: input.isCurrent,
       },
-      reason: 'payment_create',
+      reason: input.reason ?? 'payment_create',
       idempotencyKey: `charge:${input.chargeId}`,
     });
   }
@@ -161,14 +162,22 @@ export class FinancialAuditService {
   pixChargeExpired(input: {
     chargeId: string;
     previousStatus: string;
+    previousIsCurrent?: boolean;
+    expiresAt?: string | null;
+    reason?: FinancialAuditOrigin;
   }): Promise<WriteFinancialEventResult> {
+    const reason = input.reason ?? 'expiration_worker';
     return auditLogRepository.writeFinancialEvent({
       action: 'PIX_CHARGE_EXPIRED',
       entityTable: 'payment_charges',
       entityId: input.chargeId,
-      before: { status: input.previousStatus },
-      after: { status: 'expired' },
-      reason: 'expiration_worker',
+      before: {
+        status: input.previousStatus,
+        is_current: input.previousIsCurrent ?? true,
+        expires_at: input.expiresAt ?? null,
+      },
+      after: { status: 'expired', is_current: false },
+      reason,
       idempotencyKey: 'expired',
     });
   }

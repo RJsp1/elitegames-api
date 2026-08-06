@@ -39,6 +39,13 @@ router.post(
   asyncHandler(async (req, res) => paymentController.refund(req, res)),
 );
 
+router.post(
+  '/:paymentId/reissue',
+  paymentRateLimit,
+  authenticationMiddleware,
+  asyncHandler(async (req, res) => paymentController.reissue(req, res)),
+);
+
 export const devPaymentRouter = Router();
 
 devPaymentRouter.post(

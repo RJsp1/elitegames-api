@@ -20,6 +20,8 @@ import { centsToPixAmount } from '../../utils/money.js';
 import { redactSensitiveData } from '../../utils/redact-sensitive-data.js';
 
 const BLOCKED_REGISTRATION_STATUSES = new Set(['cancelled', 'refunded', 'confirmed']);
+const REISSUE_ELIGIBLE_REGISTRATION = new Set(['draft', 'pending_payment']);
+const reissueLocks = new Set<string>();
 
 function formatAmount(value: number): string {
   return Number(value).toFixed(2);
@@ -101,6 +103,23 @@ export class PaymentService {
       throw AppError.badRequest(
         `Inscrição não pode ser cobrada no status '${registration.status}'`,
         'REGISTRATION_STATUS_BLOCKED',
+      );
+    }
+
+    if (registration.status === 'paid') {
+      throw AppError.badRequest('Inscrição já está paga', 'REGISTRATION_ALREADY_PAID');
+    }
+
+    const existingPayments = await paymentRepository.listPaymentsByRegistrationId(registration.id);
+    if (existingPayments.some((p) => p.status === 'paid')) {
+      throw AppError.badRequest('Já existe pagamento pago para esta inscrição', 'PAYMENT_ALREADY_PAID');
+    }
+
+    const openCharge = await this.findOpenCurrentChargeForRegistration(registration.id);
+    if (openCharge) {
+      throw AppError.conflict(
+        'Já existe cobrança Pix ativa e não expirada para esta inscrição',
+        'ACTIVE_CHARGE_EXISTS',
       );
     }
 
@@ -275,12 +294,240 @@ export class PaymentService {
       payment.expiresAt &&
       isExpired(payment.expiresAt)
     ) {
-      await paymentRepository.expirePaymentBundle(payment);
+      const { paymentExpirationService } = await import('./payment-expiration.service.js');
+      const charge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
+      if (charge) {
+        await paymentExpirationService.processExpiredCandidate({ payment, charge });
+      } else {
+        await paymentRepository.expirePaymentBundle(payment);
+      }
       const expired = await paymentRepository.findPaymentById(paymentId);
       return toResponse(expired!);
     }
 
     return toResponse(payment);
+  }
+
+  /**
+   * Localiza cobrança current ativa e ainda não vencida para a inscrição.
+   */
+  async findOpenCurrentChargeForRegistration(
+    registrationId: string,
+  ): Promise<PaymentChargeRecord | null> {
+    const paymentsForReg = await paymentRepository.listPaymentsByRegistrationId(registrationId);
+    for (const payment of paymentsForReg) {
+      if (payment.status === 'paid') continue;
+      const charge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
+      if (!charge) continue;
+      if (charge.status !== 'active' && charge.status !== 'pending') continue;
+      if (charge.expiresAt && isExpired(charge.expiresAt)) continue;
+      return charge;
+    }
+    return null;
+  }
+
+  /**
+   * Reemite Pix reutilizando o mesmo payment (histórico via múltiplas payment_charges).
+   * Decisão: 1 payment por tentativa de cobrança; charges sucessivas com is_current.
+   */
+  async reissuePixPayment(input: {
+    registrationId: string;
+    reason?: string;
+    paymentId?: string;
+  }): Promise<PaymentResponse> {
+    const env = getEnv();
+    const lockKey = input.registrationId;
+
+    if (reissueLocks.has(lockKey)) {
+      throw AppError.conflict('Reemissão já em andamento para esta inscrição', 'REISSUE_IN_PROGRESS');
+    }
+    reissueLocks.add(lockKey);
+
+    try {
+      const registration = await paymentRepository.findRegistrationById(input.registrationId);
+      if (!registration) {
+        throw AppError.notFound('Inscrição não encontrada', 'REGISTRATION_NOT_FOUND');
+      }
+
+      const paymentsForReg = await paymentRepository.listPaymentsByRegistrationId(registration.id);
+      if (paymentsForReg.some((p) => p.status === 'paid') || registration.status === 'paid') {
+        throw AppError.badRequest(
+          'Não é possível reemitir: já existe pagamento pago',
+          'PAYMENT_ALREADY_PAID',
+        );
+      }
+
+      if (!REISSUE_ELIGIBLE_REGISTRATION.has(registration.status)) {
+        throw AppError.badRequest(
+          `Inscrição não elegível para reemissão no status '${registration.status}'`,
+          'REGISTRATION_STATUS_BLOCKED',
+        );
+      }
+
+      const openCharge = await this.findOpenCurrentChargeForRegistration(registration.id);
+      if (openCharge) {
+        throw AppError.conflict(
+          'Já existe cobrança Pix ativa e não expirada',
+          'ACTIVE_CHARGE_EXISTS',
+        );
+      }
+
+      let payment: PaymentRecord | null = null;
+      if (input.paymentId) {
+        payment = await paymentRepository.findPaymentById(input.paymentId);
+        if (!payment || payment.registrationId !== registration.id) {
+          throw AppError.notFound('Pagamento não encontrado para a inscrição');
+        }
+      } else {
+        payment =
+          paymentsForReg.find((p) =>
+            ['expired', 'cancelled', 'failed'].includes(p.status),
+          ) ??
+          paymentsForReg[0] ??
+          null;
+      }
+
+      if (!payment) {
+        // Sem payment anterior: cria fluxo completo.
+        return this.createPayment({ registrationId: registration.id });
+      }
+
+      if (payment.status === 'paid') {
+        throw AppError.badRequest('Pagamento já está pago', 'PAYMENT_ALREADY_PAID');
+      }
+
+      const amount = Number(registration.totalPrice);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw AppError.unprocessable(
+          'registrations.total_price inválido para cobrança',
+          'INVALID_TOTAL_PRICE',
+        );
+      }
+
+      const debtor = await this.resolveDebtorForRegistration(registration.id);
+      const providerCode = resolveProviderCode();
+      const providerRow = await paymentRepository.findProviderByCode(providerCode);
+      if (!providerRow) {
+        throw AppError.serviceUnavailable(
+          `Provedor '${providerCode}' não encontrado ou inativo em payment_providers`,
+          'PROVIDER_NOT_FOUND',
+        );
+      }
+
+      const expirationSeconds =
+        providerRow.defaultExpirationSeconds ?? env.PIX_CHARGE_EXPIRATION_SECONDS;
+
+      const previousPaymentStatus = payment.status;
+      const currentCharge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
+      if (currentCharge?.isCurrent) {
+        await paymentRepository.updateChargeStatus(currentCharge.id, currentCharge.status, {
+          isCurrent: false,
+        });
+      }
+
+      const txid = generateTxid('EG');
+      const pixProvider = await getPaymentProvider();
+      const amountOriginal = formatAmount(amount);
+
+      const chargeResult = await pixProvider.createCharge({
+        txid,
+        amountOriginal,
+        expirationSeconds,
+        debtorName: debtor.fullName,
+        debtorCpf: debtor.cpfDigits,
+        registrationNumber: registration.registrationNumber,
+        categoryName: registration.format ?? 'inscricao',
+        solicitacaoPagador: 'Inscrição Elite Games 2026',
+        correlationId: payment.id,
+        paymentId: payment.id,
+        registrationId: registration.id,
+      });
+
+      const qrCodeDataUrl = await qrCodeService.toDataUrl(chargeResult.pixCopiaECola);
+      const expiresAt =
+        chargeResult.expiresAt || addSeconds(new Date(), expirationSeconds).toISOString();
+
+      const updatedPayment = await paymentRepository.updatePaymentStatus(payment.id, 'active', {
+        txid: chargeResult.txid,
+        providerChargeId: chargeResult.providerChargeId ?? chargeResult.txid,
+        expiresAt,
+      });
+
+      if (previousPaymentStatus !== updatedPayment.status) {
+        await financialAuditService.paymentStatusChanged({
+          paymentId: payment.id,
+          previousStatus: previousPaymentStatus,
+          newStatus: updatedPayment.status,
+          reason: 'payment_reissue',
+        });
+      }
+
+      const charge = await paymentRepository.createPaymentCharge({
+        paymentId: payment.id,
+        providerId: providerRow.id,
+        txid: chargeResult.txid,
+        providerChargeId: chargeResult.providerChargeId ?? chargeResult.txid,
+        pixCopyPaste: chargeResult.pixCopiaECola,
+        qrCodeData: qrCodeDataUrl,
+        qrCodeImageUrl: null,
+        amount,
+        status: 'active',
+        expiresAt,
+        rawRequest:
+          (redactSensitiveData(
+            chargeResult.rawRequest ?? {
+              txid: chargeResult.txid,
+              amount: amountOriginal,
+              expirationSeconds,
+              possuiDevedor: true,
+            },
+          ) as Record<string, unknown>) ?? null,
+        rawResponse:
+          (redactSensitiveData(chargeResult.raw ?? {}) as Record<string, unknown>) ?? null,
+        isCurrent: true,
+      });
+
+      await financialAuditService.pixChargeCreated({
+        chargeId: charge.id,
+        paymentId: payment.id,
+        txid: charge.txid,
+        status: charge.status,
+        amount: charge.amount,
+        expiresAt: charge.expiresAt,
+        isCurrent: charge.isCurrent,
+        reason: 'payment_reissue',
+      });
+
+      const previousRegistrationStatus = registration.status;
+      if (registration.status !== 'pending_payment') {
+        await paymentRepository.updateRegistrationStatus(registration.id, 'pending_payment');
+        await financialAuditService.registrationStatusChanged({
+          registrationId: registration.id,
+          previousStatus: previousRegistrationStatus,
+          newStatus: 'pending_payment',
+          paymentId: payment.id,
+          reason: 'payment_reissue',
+        });
+      }
+      await paymentRepository.linkActiveReservationPayment(registration.id, payment.id);
+
+      logger.info('Pix reemitido', {
+        correlationId: payment.id,
+        paymentId: payment.id,
+        registrationId: registration.id,
+        chargeId: charge.id,
+        txidMasked: chargeResult.txid.slice(0, 4) + '…' + chargeResult.txid.slice(-4),
+        provider: providerCode,
+        operation: 'payment_reissue',
+        statusLocal: updatedPayment.status,
+        amount,
+        reason: input.reason ?? 'reissue',
+      });
+
+      return toResponse(updatedPayment, charge);
+    } finally {
+      reissueLocks.delete(lockKey);
+    }
   }
 
   async refreshPayment(paymentId: string): Promise<PaymentResponse> {

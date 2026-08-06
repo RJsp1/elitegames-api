@@ -57,6 +57,15 @@ const baseSchema = z.object({
   PAYMENT_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().positive().default(10_000),
   PAYMENT_RECONCILIATION_BATCH_SIZE: z.coerce.number().int().positive().max(200).default(50),
   PAYMENT_RECONCILIATION_CONCURRENCY: z.coerce.number().int().positive().max(20).default(5),
+
+  PAYMENT_EXPIRATION_ENABLED: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true'),
+  PAYMENT_EXPIRATION_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  PAYMENT_EXPIRATION_BATCH_SIZE: z.coerce.number().int().positive().max(200).default(50),
+  PAYMENT_EXPIRATION_CONCURRENCY: z.coerce.number().int().positive().max(20).default(5),
 });
 
 export type Env = z.infer<typeof baseSchema> & {

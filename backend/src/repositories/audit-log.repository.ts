@@ -58,6 +58,7 @@ export type FinancialAuditOrigin =
   | 'admin_manual'
   | 'expiration_worker'
   | 'payment_create'
+  | 'payment_reissue'
   | 'system';
 
 export interface AuditLogRecord {

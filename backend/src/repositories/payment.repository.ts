@@ -641,6 +641,7 @@ export class PaymentRepository {
     data?: {
       rawResponse?: Record<string, unknown> | null;
       expiresAt?: string | null;
+      isCurrent?: boolean;
     },
   ): Promise<PaymentChargeRecord> {
     const now = nowIso();
@@ -655,6 +656,7 @@ export class PaymentRepository {
         updatedAt: now,
         ...(data?.rawResponse !== undefined ? { rawResponse: data.rawResponse } : {}),
         ...(data?.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
+        ...(data?.isCurrent !== undefined ? { isCurrent: data.isCurrent } : {}),
       };
       charges.set(chargeId, updated);
       return updated;
@@ -663,6 +665,7 @@ export class PaymentRepository {
     const payload: Record<string, unknown> = { status, updated_at: now };
     if (data?.rawResponse !== undefined) payload.raw_response = data.rawResponse;
     if (data?.expiresAt !== undefined) payload.expires_at = data.expiresAt;
+    if (data?.isCurrent !== undefined) payload.is_current = data.isCurrent;
 
     const { data: row, error } = await supabase
       .from('payment_charges')
@@ -672,6 +675,40 @@ export class PaymentRepository {
       .single();
     if (error) throw AppError.internal(error.message);
     return mapCharge(row as Record<string, unknown>);
+  }
+
+  async listChargesByPaymentId(paymentId: string): Promise<PaymentChargeRecord[]> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return Array.from(charges.values())
+        .filter((c) => c.paymentId === paymentId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+
+    const { data, error } = await supabase
+      .from('payment_charges')
+      .select('*')
+      .eq('payment_id', paymentId)
+      .order('created_at', { ascending: false });
+    if (error) throw AppError.internal(error.message);
+    return (data ?? []).map((row) => mapCharge(row as Record<string, unknown>));
+  }
+
+  async listPaymentsByRegistrationId(registrationId: string): Promise<PaymentRecord[]> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return Array.from(payments.values())
+        .filter((p) => p.registrationId === registrationId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('registration_id', registrationId)
+      .order('created_at', { ascending: false });
+    if (error) throw AppError.internal(error.message);
+    return (data ?? []).map((row) => mapPayment(row as Record<string, unknown>));
   }
 
   async createPaymentEvent(data: {
@@ -1138,15 +1175,70 @@ export class PaymentRepository {
     return (data ?? []).map((row) => mapPayment(row as Record<string, unknown>));
   }
 
+  /**
+   * Cobranças elegíveis à expiração local:
+   * status active/pending, expires_at preenchido e vencido, payment ainda não paid.
+   */
+  async findExpiredEligibleCharges(
+    limit = 50,
+    reference = new Date(),
+  ): Promise<Array<{ charge: PaymentChargeRecord; payment: PaymentRecord }>> {
+    const iso = reference.toISOString();
+    const supabase = getSupabase();
+
+    if (!supabase) {
+      const pairs: Array<{ charge: PaymentChargeRecord; payment: PaymentRecord }> = [];
+      for (const charge of charges.values()) {
+        if (charge.status !== 'pending' && charge.status !== 'active') continue;
+        if (!charge.expiresAt || charge.expiresAt > iso) continue;
+        const payment = payments.get(charge.paymentId);
+        if (!payment) continue;
+        if (payment.status === 'paid') continue;
+        pairs.push({ charge, payment });
+      }
+      return pairs
+        .sort((a, b) => (a.charge.expiresAt ?? '').localeCompare(b.charge.expiresAt ?? ''))
+        .slice(0, limit);
+    }
+
+    const { data, error } = await supabase
+      .from('payment_charges')
+      .select('*')
+      .in('status', ['pending', 'active'])
+      .not('expires_at', 'is', null)
+      .lte('expires_at', iso)
+      .order('expires_at', { ascending: true })
+      .limit(Math.max(limit * 3, limit));
+
+    if (error) throw AppError.internal(error.message);
+
+    const out: Array<{ charge: PaymentChargeRecord; payment: PaymentRecord }> = [];
+    for (const row of data ?? []) {
+      const charge = mapCharge(row as Record<string, unknown>);
+      const payment = await this.findPaymentById(charge.paymentId);
+      if (!payment || payment.status === 'paid') continue;
+      out.push({ charge, payment });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   async expirePaymentBundle(payment: PaymentRecord): Promise<void> {
     const charge = await this.findCurrentChargeByPaymentId(payment.id);
-    await this.updatePaymentStatus(payment.id, 'expired');
-    if (charge) {
-      await this.updateChargeStatus(charge.id, 'expired');
+    if (payment.status !== 'paid' && payment.status !== 'expired') {
+      await this.updatePaymentStatus(payment.id, 'expired');
+    }
+    if (charge && charge.status !== 'paid' && charge.status !== 'expired') {
+      await this.updateChargeStatus(charge.id, 'expired', { isCurrent: false });
+    } else if (charge && charge.status === 'expired' && charge.isCurrent) {
+      await this.updateChargeStatus(charge.id, 'expired', { isCurrent: false });
     }
     if (payment.registrationId) {
-      await this.expireReservation(payment.id, payment.registrationId);
-      await this.updateRegistrationStatus(payment.registrationId, expireRegistrationMode);
+      const registration = await this.findRegistrationById(payment.registrationId);
+      if (registration?.status === 'pending_payment') {
+        await this.expireReservation(payment.id, payment.registrationId);
+        await this.updateRegistrationStatus(payment.registrationId, expireRegistrationMode);
+      }
     }
   }
 

@@ -288,6 +288,14 @@ describe('supabase schema payment flow (mock provider)', () => {
     await paymentRepository.updatePaymentStatus(createRes.body.paymentId, 'active', {
       expiresAt: new Date(Date.now() - 1000).toISOString(),
     });
+    const currentCharge = await paymentRepository.findCurrentChargeByPaymentId(
+      createRes.body.paymentId,
+    );
+    if (currentCharge) {
+      await paymentRepository.updateChargeStatus(currentCharge.id, 'active', {
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      });
+    }
 
     const count = await expirePaymentsOnce();
     expect(count).toBeGreaterThanOrEqual(1);
@@ -295,8 +303,9 @@ describe('supabase schema payment flow (mock provider)', () => {
     const payment = await paymentRepository.findPaymentById(createRes.body.paymentId);
     expect(payment?.status).toBe('expired');
 
-    const charge = await paymentRepository.findCurrentChargeByPaymentId(createRes.body.paymentId);
-    expect(charge?.status).toBe('expired');
+    const charges = await paymentRepository.listChargesByPaymentId(createRes.body.paymentId);
+    expect(charges[0]?.status).toBe('expired');
+    expect(charges[0]?.isCurrent).toBe(false);
 
     const registration = await paymentRepository.findRegistrationById(regId);
     expect(registration?.status).toBe('draft');

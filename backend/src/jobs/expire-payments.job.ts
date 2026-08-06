@@ -1,73 +1,44 @@
-import { paymentRepository } from '../repositories/payment.repository.js';
-import { financialAuditService } from '../services/audit/financial-audit.service.js';
+import { getEnv } from '../config/env.js';
+import { paymentExpirationService } from '../services/payment/payment-expiration.service.js';
 import { logger } from '../utils/logger.js';
 
-const INTERVAL_MS = 60_000;
 let timer: NodeJS.Timeout | null = null;
 
+/**
+ * Executa um ciclo de expiração (com consulta remota antes de expirar).
+ * Retorna a quantidade de cobranças expiradas localmente.
+ */
 export async function expirePaymentsOnce(): Promise<number> {
-  const expired = await paymentRepository.findExpiredActivePayments();
-  for (const payment of expired) {
-    const previousStatus = payment.status;
-    const charge = await paymentRepository.findCurrentChargeByPaymentId(payment.id);
-    const previousChargeStatus = charge?.status ?? null;
-    const registration = payment.registrationId
-      ? await paymentRepository.findRegistrationById(payment.registrationId)
-      : null;
-    const previousRegistrationStatus = registration?.status ?? null;
-
-    await paymentRepository.expirePaymentBundle(payment);
-
-    await financialAuditService.paymentStatusChanged({
-      paymentId: payment.id,
-      previousStatus,
-      newStatus: 'expired',
-      reason: 'expiration_worker',
-    });
-
-    if (charge) {
-      await financialAuditService.pixChargeExpired({
-        chargeId: charge.id,
-        previousStatus: previousChargeStatus ?? charge.status,
-      });
-    }
-
-    if (payment.registrationId && previousRegistrationStatus) {
-      const updatedRegistration = await paymentRepository.findRegistrationById(
-        payment.registrationId,
-      );
-      if (
-        updatedRegistration &&
-        updatedRegistration.status !== previousRegistrationStatus
-      ) {
-        await financialAuditService.registrationStatusChanged({
-          registrationId: payment.registrationId,
-          previousStatus: previousRegistrationStatus,
-          newStatus: updatedRegistration.status,
-          paymentId: payment.id,
-          reason: 'expiration_worker',
-        });
-      }
-    }
-
-    logger.info('Pagamento expirado', {
-      paymentId: payment.id,
-      txid: payment.txid ?? undefined,
-    });
-  }
-  return expired.length;
+  const summary = await paymentExpirationService.runCycle();
+  if (!summary) return 0;
+  return summary.expired;
 }
 
+/**
+ * Job periódico no processo da API.
+ * Preferência de produção: integrar no worker de reconciliação
+ * (start-reconciliation-worker) após cada ciclo — evita processo extra
+ * e reutiliza cliente Sicredi / heartbeat. Este job permanece para
+ * ambientes sem worker dedicado quando PAYMENT_EXPIRATION_ENABLED=true.
+ */
 export function startExpirePaymentsJob(): void {
   if (timer) return;
+  const env = getEnv();
+  if (!env.PAYMENT_EXPIRATION_ENABLED) {
+    logger.info('Job de expiração desabilitado (PAYMENT_EXPIRATION_ENABLED=false)');
+    return;
+  }
+
+  const intervalMs = env.PAYMENT_EXPIRATION_INTERVAL_MS;
   timer = setInterval(() => {
     expirePaymentsOnce().catch((err) => {
       logger.error('Falha no job expire-payments', {
         message: err instanceof Error ? err.message : 'unknown',
+        operation: 'payment_expiration_cycle',
       });
     });
-  }, INTERVAL_MS);
-  timer.unref?.();
+  }, intervalMs);
+  // Mantém ref no event loop do processo API (sem unref).
 }
 
 export function stopExpirePaymentsJob(): void {

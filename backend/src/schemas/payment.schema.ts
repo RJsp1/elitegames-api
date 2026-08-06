@@ -36,4 +36,9 @@ export const refundSchema = z.object({
   reason: z.string().max(200).optional(),
 });
 
+export const reissuePaymentSchema = z.object({
+  reason: z.string().max(200).optional(),
+});
+
 export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
+export type ReissuePaymentBody = z.infer<typeof reissuePaymentSchema>;
