@@ -43,6 +43,21 @@ export interface PublicPriceBatchRecord {
   createdAt: string | null;
 }
 
+/**
+ * Override por categoria no lote (`public.price_batch_categories`).
+ * Colunas reais: batch_id, category_id, price_per_athlete, price_per_team,
+ * is_active, slots, id, created_at, updated_at — sem deleted_at.
+ */
+export interface PublicPriceBatchCategoryOverride {
+  id: string;
+  batchId: string;
+  categoryId: string;
+  pricePerAthlete: number;
+  pricePerTeam: number | null;
+  isActive: boolean;
+  slots: number | null;
+}
+
 export interface PublicCategoryRecord {
   id: string;
   eventId: string;

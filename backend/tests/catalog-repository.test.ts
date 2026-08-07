@@ -5,8 +5,11 @@ import {
   seedEventForTest,
   seedCategoryForTest,
   seedPriceBatchForTest,
+  seedPriceBatchCategoryOverrideForTest,
   catalogRepository,
   calculatePriceCentsFromBatch,
+  resolveCategoryPriceCents,
+  totalPriceFromCents,
   selectCurrentPriceBatch,
   isEventPubliclyEligible,
   normalizeVideoUrls,
@@ -16,6 +19,7 @@ import {
   paymentRepository,
   seedRegistrationForTest,
 } from '../src/repositories/payment.repository.js';
+import { centsToPixAmount, toCents } from '../src/utils/money.js';
 
 describe('catalog.repository — schema Lovable', () => {
   beforeEach(() => {
@@ -351,5 +355,288 @@ describe('catalog.repository — schema Lovable', () => {
     expect(
       normalizeVideoUrls(['a', '', '  ', 1, null, 'b.mp4', { u: 1 }]),
     ).toEqual(['a', 'b.mp4']);
+  });
+});
+
+describe('resolveCategoryPriceCents — overrides price_batch_categories', () => {
+  beforeEach(() => {
+    clearCatalogMemoryStore();
+    clearPaymentMemoryStore();
+  });
+
+  it('sem override → preço do lote preservado', () => {
+    const batch = seedPriceBatchForTest({
+      id: randomUUID(),
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+      pricePerTeam: null,
+    });
+    const categoryId = randomUUID();
+    expect(
+      resolveCategoryPriceCents({ batch, override: null, teamSize: 1, categoryId }),
+    ).toBe(19990);
+    expect(
+      resolveCategoryPriceCents({ batch, override: null, teamSize: 2, categoryId }),
+    ).toBe(39980);
+  });
+
+  it('override individual price_per_athlete = 0.02', () => {
+    const batchId = randomUUID();
+    const categoryId = randomUUID();
+    const batch = seedPriceBatchForTest({
+      id: batchId,
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    const override = seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId,
+      pricePerAthlete: 0.02,
+      pricePerTeam: null,
+      isActive: true,
+    });
+    const cents = resolveCategoryPriceCents({
+      batch,
+      override,
+      teamSize: 1,
+      categoryId,
+    });
+    expect(cents).toBe(2);
+    expect(centsToPixAmount(cents)).toBe('0.02');
+    expect(totalPriceFromCents(cents)).toBe(0.02);
+  });
+
+  it('override dupla por atleta: 0.01 × 2 = 0.02', () => {
+    const batchId = randomUUID();
+    const categoryId = randomUUID();
+    const batch = seedPriceBatchForTest({
+      id: batchId,
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    const override = seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId,
+      pricePerAthlete: 0.01,
+      pricePerTeam: null,
+    });
+    const cents = resolveCategoryPriceCents({
+      batch,
+      override,
+      teamSize: 2,
+      categoryId,
+    });
+    expect(cents).toBe(2);
+    expect(centsToPixAmount(cents)).toBe('0.02');
+  });
+
+  it('override dupla por equipe: price_per_team = 0.01', () => {
+    const batchId = randomUUID();
+    const categoryId = randomUUID();
+    const batch = seedPriceBatchForTest({
+      id: batchId,
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    const override = seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId,
+      pricePerAthlete: 0.01,
+      pricePerTeam: 0.01,
+    });
+    const cents = resolveCategoryPriceCents({
+      batch,
+      override,
+      teamSize: 2,
+      categoryId,
+    });
+    expect(cents).toBe(1);
+    expect(centsToPixAmount(cents)).toBe('0.01');
+  });
+
+  it('override inativo é ignorado', () => {
+    const batchId = randomUUID();
+    const categoryId = randomUUID();
+    const batch = seedPriceBatchForTest({
+      id: batchId,
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    const override = seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId,
+      pricePerAthlete: 0.02,
+      isActive: false,
+    });
+    expect(
+      resolveCategoryPriceCents({ batch, override, teamSize: 1, categoryId }),
+    ).toBe(19990);
+  });
+
+  it('override de outra categoria é ignorado', () => {
+    const batchId = randomUUID();
+    const categoryId = randomUUID();
+    const batch = seedPriceBatchForTest({
+      id: batchId,
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    const override = seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId: randomUUID(),
+      pricePerAthlete: 0.02,
+      isActive: true,
+    });
+    expect(
+      resolveCategoryPriceCents({ batch, override, teamSize: 1, categoryId }),
+    ).toBe(19990);
+  });
+
+  it('override de outro batch é ignorado', () => {
+    const batch = seedPriceBatchForTest({
+      id: randomUUID(),
+      eventId: randomUUID(),
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    const categoryId = randomUUID();
+    const override = seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId: randomUUID(),
+      categoryId,
+      pricePerAthlete: 0.02,
+      isActive: true,
+    });
+    expect(
+      resolveCategoryPriceCents({ batch, override, teamSize: 1, categoryId }),
+    ).toBe(19990);
+  });
+
+  it('catálogo e total de inscrição usam exatamente o mesmo centavo', async () => {
+    const eventId = randomUUID();
+    const categoryId = randomUUID();
+    const batchId = randomUUID();
+    seedEventForTest({
+      id: eventId,
+      slug: 'override-same',
+      name: 'P',
+      status: 'registration_open',
+      isPublic: true,
+    });
+    seedCategoryForTest({
+      id: categoryId,
+      eventId,
+      name: 'Intermediário Masculino',
+      format: 'individual',
+      teamSize: 1,
+      capacity: null,
+    });
+    seedPriceBatchForTest({
+      id: batchId,
+      eventId,
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId,
+      pricePerAthlete: 0.02,
+      pricePerTeam: null,
+      isActive: true,
+    });
+
+    const cat = await catalogRepository.findCategoryById(categoryId);
+    expect(cat!.priceCents).toBe(2);
+    expect(centsToPixAmount(cat!.priceCents)).toBe('0.02');
+    expect(totalPriceFromCents(cat!.priceCents)).toBe(0.02);
+
+    const resolvedAgain = resolveCategoryPriceCents({
+      batch: seedPriceBatchForTest({
+        id: batchId,
+        eventId,
+        name: 'Lote',
+        pricePerAthlete: 199.9,
+      }),
+      override: {
+        id: randomUUID(),
+        batchId,
+        categoryId,
+        pricePerAthlete: 0.02,
+        pricePerTeam: null,
+        isActive: true,
+        slots: null,
+      },
+      teamSize: 1,
+      categoryId,
+    });
+    expect(resolvedAgain).toBe(cat!.priceCents);
+  });
+
+  it('R$ 0,01 / R$ 0,02 não sofrem arredondamento incorreto', () => {
+    expect(toCents(0.01)).toBe(1);
+    expect(toCents(0.02)).toBe(2);
+    expect(centsToPixAmount(1)).toBe('0.01');
+    expect(centsToPixAmount(2)).toBe('0.02');
+    expect(totalPriceFromCents(1)).toBe(0.01);
+    expect(totalPriceFromCents(2)).toBe(0.02);
+  });
+
+  it('hydrate lista aplica override ativo da categoria', async () => {
+    const eventId = randomUUID();
+    const catA = randomUUID();
+    const catB = randomUUID();
+    const batchId = randomUUID();
+    seedEventForTest({
+      id: eventId,
+      slug: 'ov-list',
+      name: 'P',
+      status: 'registration_open',
+      isPublic: true,
+    });
+    seedCategoryForTest({
+      id: catA,
+      eventId,
+      name: 'Com override',
+      format: 'individual',
+      teamSize: 1,
+      capacity: null,
+    });
+    seedCategoryForTest({
+      id: catB,
+      eventId,
+      name: 'Sem override',
+      format: 'individual',
+      teamSize: 1,
+      capacity: null,
+    });
+    seedPriceBatchForTest({
+      id: batchId,
+      eventId,
+      name: 'Lote',
+      pricePerAthlete: 199.9,
+    });
+    seedPriceBatchCategoryOverrideForTest({
+      id: randomUUID(),
+      batchId,
+      categoryId: catA,
+      pricePerAthlete: 0.02,
+      isActive: true,
+    });
+
+    const list = await catalogRepository.listCategoriesByEventId(eventId);
+    expect(list.find((c) => c.id === catA)!.priceCents).toBe(2);
+    expect(list.find((c) => c.id === catB)!.priceCents).toBe(19990);
   });
 });

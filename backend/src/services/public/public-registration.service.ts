@@ -1,4 +1,7 @@
-import { catalogRepository } from '../../repositories/catalog.repository.js';
+import {
+  catalogRepository,
+  totalPriceFromCents,
+} from '../../repositories/catalog.repository.js';
 import {
   listAthletesMemoryForTest,
   listGuardiansMemoryForTest,
@@ -198,7 +201,7 @@ export class PublicRegistrationService {
       throw AppError.badRequest('Assinatura excede o tamanho máximo', 'SIGNATURE_TOO_LARGE');
     }
 
-    const totalPrice = Number((category.priceCents / 100).toFixed(2));
+    const totalPrice = totalPriceFromCents(category.priceCents);
     const format = category.format;
 
     // Equipe/dupla: cria team quando houver teamName

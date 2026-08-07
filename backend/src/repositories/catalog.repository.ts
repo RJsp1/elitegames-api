@@ -6,6 +6,7 @@ import { toCents } from '../utils/money.js';
 import type {
   PublicCategoryRecord,
   PublicEventRecord,
+  PublicPriceBatchCategoryOverride,
   PublicPriceBatchRecord,
 } from '../types/public-catalog.types.js';
 import { PUBLIC_EVENT_STATUSES } from '../types/public-catalog.types.js';
@@ -13,11 +14,18 @@ import { PUBLIC_EVENT_STATUSES } from '../types/public-catalog.types.js';
 const events = new Map<string, PublicEventRecord>();
 const categories = new Map<string, PublicCategoryRecord & { teamSizeRaw?: number }>();
 const priceBatches = new Map<string, PublicPriceBatchRecord>();
+/** Chave: `${batchId}:${categoryId}` */
+const priceBatchOverrides = new Map<string, PublicPriceBatchCategoryOverride>();
 
 export function clearCatalogMemoryStore(): void {
   events.clear();
   categories.clear();
   priceBatches.clear();
+  priceBatchOverrides.clear();
+}
+
+function overrideKey(batchId: string, categoryId: string): string {
+  return `${batchId}:${categoryId}`;
 }
 
 export function seedEventForTest(
@@ -121,6 +129,26 @@ export function seedPriceBatchForTest(
   return record;
 }
 
+export function seedPriceBatchCategoryOverrideForTest(
+  partial: Partial<PublicPriceBatchCategoryOverride> & {
+    id: string;
+    batchId: string;
+    categoryId: string;
+  },
+): PublicPriceBatchCategoryOverride {
+  const record: PublicPriceBatchCategoryOverride = {
+    id: partial.id,
+    batchId: partial.batchId,
+    categoryId: partial.categoryId,
+    pricePerAthlete: partial.pricePerAthlete ?? 0,
+    pricePerTeam: partial.pricePerTeam ?? null,
+    isActive: partial.isActive ?? true,
+    slots: partial.slots ?? null,
+  };
+  priceBatchOverrides.set(overrideKey(record.batchId, record.categoryId), record);
+  return record;
+}
+
 function isPublicStatus(status: string): boolean {
   return (PUBLIC_EVENT_STATUSES as readonly string[]).includes(status);
 }
@@ -198,7 +226,7 @@ function resolveTeamSize(format: string, teamSizeRaw: number | null | undefined)
 }
 
 /**
- * Preço em centavos a partir do lote.
+ * Preço em centavos a partir do lote (sem override).
  * Prioridade: price_per_team; senão price_per_athlete × team_size.
  * Conversão via toCents (Math.round) para evitar float.
  */
@@ -213,6 +241,75 @@ export function calculatePriceCentsFromBatch(
     return toCents(Number(batch.pricePerAthlete)) * teamSize;
   }
   return 0;
+}
+
+/**
+ * Resolução única de preço para catálogo público (`currentPrice`) e
+ * criação/cálculo da inscrição (`total_price`).
+ *
+ * Prioridade:
+ * A) override ativo em `price_batch_categories` (mesmo batch + mesma categoria)
+ * B) preço padrão do `price_batch`
+ *
+ * No override: price_per_team (fechado) > price_per_athlete × team_size.
+ */
+export function resolveCategoryPriceCents(args: {
+  batch: PublicPriceBatchRecord | null;
+  override?: PublicPriceBatchCategoryOverride | null;
+  teamSize: number;
+  categoryId: string;
+}): number {
+  const { batch, teamSize, categoryId } = args;
+  if (!batch) return 0;
+
+  const override = args.override ?? null;
+  const validOverride =
+    override != null &&
+    override.isActive === true &&
+    override.batchId === batch.id &&
+    override.categoryId === categoryId;
+
+  if (validOverride) {
+    if (override.pricePerTeam != null && Number.isFinite(override.pricePerTeam)) {
+      return toCents(Number(override.pricePerTeam));
+    }
+    if (Number.isFinite(override.pricePerAthlete)) {
+      return toCents(Number(override.pricePerAthlete)) * teamSize;
+    }
+  }
+
+  return calculatePriceCentsFromBatch(batch, teamSize);
+}
+
+/** Total em reais (2 casas) a partir dos centavos resolvidos — mesma regra do create. */
+export function totalPriceFromCents(priceCents: number): number {
+  return Number((priceCents / 100).toFixed(2));
+}
+
+export function findOverrideForCategory(
+  overrides: PublicPriceBatchCategoryOverride[],
+  batchId: string,
+  categoryId: string,
+): PublicPriceBatchCategoryOverride | null {
+  return (
+    overrides.find(
+      (o) => o.batchId === batchId && o.categoryId === categoryId && o.isActive,
+    ) ?? null
+  );
+}
+
+function mapPriceBatchCategoryOverride(
+  row: Record<string, unknown>,
+): PublicPriceBatchCategoryOverride {
+  return {
+    id: String(row.id),
+    batchId: String(row.batch_id),
+    categoryId: String(row.category_id),
+    pricePerAthlete: Number(row.price_per_athlete),
+    pricePerTeam: row.price_per_team == null ? null : Number(row.price_per_team),
+    isActive: Boolean(row.is_active),
+    slots: row.slots == null ? null : Number(row.slots),
+  };
 }
 
 export function isPriceBatchEligibleForCategory(
@@ -310,9 +407,37 @@ export class CatalogRepository {
     return (data ?? []).map((row) => mapPriceBatch(row as Record<string, unknown>));
   }
 
+  /**
+   * Overrides de `price_batch_categories` para os lotes informados.
+   * Sem deleted_at no schema — filtro por is_active na resolução.
+   */
+  async listPriceBatchOverridesByBatchIds(
+    batchIds: string[],
+  ): Promise<PublicPriceBatchCategoryOverride[]> {
+    if (!batchIds.length) return [];
+    const supabase = getSupabase();
+    if (!supabase) {
+      return Array.from(priceBatchOverrides.values()).filter((o) =>
+        batchIds.includes(o.batchId),
+      );
+    }
+
+    const { data, error } = await supabase
+      .from('price_batch_categories')
+      .select(
+        'id, batch_id, category_id, price_per_athlete, price_per_team, is_active, slots, created_at, updated_at',
+      )
+      .in('batch_id', batchIds);
+    if (error) throw AppError.internal(error.message);
+    return (data ?? []).map((row) =>
+      mapPriceBatchCategoryOverride(row as Record<string, unknown>),
+    );
+  }
+
   private async hydrateCategory(
     row: Record<string, unknown>,
     batches: PublicPriceBatchRecord[],
+    overrides: PublicPriceBatchCategoryOverride[],
   ): Promise<PublicCategoryRecord> {
     const id = String(row.id);
     const eventId = String(row.event_id);
@@ -333,7 +458,15 @@ export class CatalogRepository {
     const occupiedSlots = await paymentRepository.countOccupyingRegistrationsByCategoryId(id);
 
     const batch = selectCurrentPriceBatch(batches, id, eventId);
-    const priceCents = batch ? calculatePriceCentsFromBatch(batch, teamSize) : 0;
+    const override = batch
+      ? findOverrideForCategory(overrides, batch.id, id)
+      : null;
+    const priceCents = resolveCategoryPriceCents({
+      batch,
+      override,
+      teamSize,
+      categoryId: id,
+    });
     const hasValidBatch = batch != null && priceCents > 0;
 
     const soldOut =
@@ -379,12 +512,21 @@ export class CatalogRepository {
   private async hydrateMemoryCategory(
     base: PublicCategoryRecord,
     batches: PublicPriceBatchRecord[],
+    overrides: PublicPriceBatchCategoryOverride[],
   ): Promise<PublicCategoryRecord> {
     const occupiedSlots = await paymentRepository.countOccupyingRegistrationsByCategoryId(
       base.id,
     );
     const batch = selectCurrentPriceBatch(batches, base.id, base.eventId);
-    const resolvedCents = batch ? calculatePriceCentsFromBatch(batch, base.teamSize) : 0;
+    const override = batch
+      ? findOverrideForCategory(overrides, batch.id, base.id)
+      : null;
+    const resolvedCents = resolveCategoryPriceCents({
+      batch,
+      override,
+      teamSize: base.teamSize,
+      categoryId: base.id,
+    });
     const hasValidBatch = batch != null && resolvedCents > 0;
     const capacity = base.capacity;
     const soldOut =
@@ -405,15 +547,24 @@ export class CatalogRepository {
     };
   }
 
-  async listCategoriesByEventId(eventId: string): Promise<PublicCategoryRecord[]> {
+  private async loadBatchesAndOverrides(eventId: string): Promise<{
+    batches: PublicPriceBatchRecord[];
+    overrides: PublicPriceBatchCategoryOverride[];
+  }> {
     const batches = await this.listPriceBatchesByEventId(eventId);
+    const overrides = await this.listPriceBatchOverridesByBatchIds(batches.map((b) => b.id));
+    return { batches, overrides };
+  }
+
+  async listCategoriesByEventId(eventId: string): Promise<PublicCategoryRecord[]> {
+    const { batches, overrides } = await this.loadBatchesAndOverrides(eventId);
     const supabase = getSupabase();
 
     if (!supabase) {
       const list = Array.from(categories.values()).filter((c) => c.eventId === eventId);
       const out: PublicCategoryRecord[] = [];
       for (const c of list) {
-        out.push(await this.hydrateMemoryCategory(c, batches));
+        out.push(await this.hydrateMemoryCategory(c, batches, overrides));
       }
       return out;
     }
@@ -441,7 +592,7 @@ export class CatalogRepository {
 
     const out: PublicCategoryRecord[] = [];
     for (const row of rows) {
-      out.push(await this.hydrateCategory(row, batches));
+      out.push(await this.hydrateCategory(row, batches, overrides));
     }
     return out;
   }
@@ -451,8 +602,8 @@ export class CatalogRepository {
     if (!supabase) {
       const base = categories.get(categoryId);
       if (!base) return null;
-      const batches = await this.listPriceBatchesByEventId(base.eventId);
-      return this.hydrateMemoryCategory(base, batches);
+      const { batches, overrides } = await this.loadBatchesAndOverrides(base.eventId);
+      return this.hydrateMemoryCategory(base, batches, overrides);
     }
 
     const primary = await supabase
@@ -479,8 +630,8 @@ export class CatalogRepository {
       row = (alt.data as Record<string, unknown>) ?? null;
     }
     if (!row) return null;
-    const batches = await this.listPriceBatchesByEventId(String(row.event_id));
-    return this.hydrateCategory(row, batches);
+    const { batches, overrides } = await this.loadBatchesAndOverrides(String(row.event_id));
+    return this.hydrateCategory(row, batches, overrides);
   }
 
   /**
@@ -491,7 +642,7 @@ export class CatalogRepository {
     eventId: string,
     categorySlug: string,
   ): Promise<PublicCategoryRecord | null> {
-    const batches = await this.listPriceBatchesByEventId(eventId);
+    const { batches, overrides } = await this.loadBatchesAndOverrides(eventId);
     const supabase = getSupabase();
 
     if (!supabase) {
@@ -503,7 +654,7 @@ export class CatalogRepository {
           c.deletedAt == null,
       );
       if (!base) return null;
-      return this.hydrateMemoryCategory(base, batches);
+      return this.hydrateMemoryCategory(base, batches, overrides);
     }
 
     const primary = await supabase
@@ -534,7 +685,7 @@ export class CatalogRepository {
       row = (alt.data as Record<string, unknown>) ?? null;
     }
     if (!row) return null;
-    return this.hydrateCategory(row, batches);
+    return this.hydrateCategory(row, batches, overrides);
   }
 
   /**
