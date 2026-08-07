@@ -11,12 +11,29 @@ const cpfSchema = z
   .transform((v) => normalizeCpfDigits(v))
   .refine((v) => v.length === 11, { message: 'CPF deve possuir 11 dígitos' });
 
+/**
+ * Campos alinhados a `public.athletes` NOT NULL sem default:
+ * full_name, cpf, birth_date, gender, email, phone.
+ * (Demais NOT NULL têm DEFAULT: consents, is_public_profile, timestamps.)
+ */
 const athleteSchema = z.object({
   fullName: z.string().min(2).max(200),
   cpf: cpfSchema,
-  email: z.string().email().max(160).optional(),
-  phone: z.string().min(8).max(20).optional(),
-  birthDate: z.string().max(32).optional(),
+  email: z
+    .string({ error: 'Informe um e-mail válido para o atleta.' })
+    .trim()
+    .email('Informe um e-mail válido para o atleta.')
+    .max(160, 'Informe um e-mail válido para o atleta.'),
+  phone: z
+    .string({ error: 'Informe o telefone do atleta.' })
+    .trim()
+    .min(8, 'Informe o telefone do atleta.')
+    .max(20, 'Telefone inválido.'),
+  birthDate: z
+    .string({ error: 'Informe a data de nascimento do atleta.' })
+    .trim()
+    .min(8, 'Informe a data de nascimento do atleta.')
+    .max(32, 'Data de nascimento inválida.'),
   /**
    * Obrigatório: `athletes.gender` é NOT NULL no banco.
    * Valores usados pelo formulário Elite CDT: masculino | feminino | outro.

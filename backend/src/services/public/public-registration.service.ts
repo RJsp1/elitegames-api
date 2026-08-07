@@ -24,6 +24,7 @@ import type {
 } from '../../types/public-catalog.types.js';
 import {
   buildDuplicateLockKey,
+  filterBlockingRegistrations,
   pickBlockingRegistration,
   withRegistrationCreateLock,
 } from './registration-duplicate.js';
@@ -197,10 +198,20 @@ export class PublicRegistrationService {
           if (again?.responseSnapshot) return again.responseSnapshot;
         }
 
-        const blocking = await paymentRepository.findBlockingRegistrationsForAthletes({
+        const blockingRaw = await paymentRepository.findBlockingRegistrationsForAthletes({
           eventId: event.id,
           categoryId: category.id,
           athleteCpfs,
+        });
+        const blocking = await filterBlockingRegistrations(blockingRaw, {
+          hasLinkedAthletes: async (registrationId) => {
+            const linked = await paymentRepository.listAthletesForRegistration(registrationId);
+            return linked.length > 0;
+          },
+          hasWaiver: async (registrationId) => {
+            const waiver = await paymentRepository.findWaiverByRegistrationId(registrationId);
+            return waiver != null;
+          },
         });
         const decision = pickBlockingRegistration(blocking);
 
@@ -320,7 +331,73 @@ export class PublicRegistrationService {
 
     const format = category.format;
 
-    // Equipe/dupla: cria team quando houver teamName
+    // 1) Upsert atletas ANTES da registration — falha de NOT NULL não cria draft órfã.
+    const prepared: Array<{ athleteId: string; role: string }> = [];
+    let index = 0;
+    for (const athleteInput of body.athletes) {
+      const gender = String(athleteInput.gender ?? '').trim();
+      if (!gender) {
+        throw AppError.badRequest('Informe o gênero do atleta.', 'VALIDATION_ERROR');
+      }
+      const email = String(athleteInput.email ?? '').trim();
+      if (!email) {
+        throw AppError.badRequest(
+          'Informe um e-mail válido para o atleta.',
+          'VALIDATION_ERROR',
+        );
+      }
+      const phone = String(athleteInput.phone ?? '').trim();
+      if (!phone) {
+        throw AppError.badRequest('Informe o telefone do atleta.', 'VALIDATION_ERROR');
+      }
+      const birthDate = String(athleteInput.birthDate ?? '').trim();
+      if (!birthDate) {
+        throw AppError.badRequest(
+          'Informe a data de nascimento do atleta.',
+          'VALIDATION_ERROR',
+        );
+      }
+
+      const existing = await paymentRepository.findAthleteByCpf(athleteInput.cpf);
+      let athleteId: string;
+      if (existing) {
+        await paymentRepository.updateAthlete(existing.id, {
+          fullName: athleteInput.fullName,
+          email,
+          phone,
+          birthDate,
+          gender,
+          shirtSize: athleteInput.shirtSize ?? body.shirtSizes?.[index],
+          emergencyName: athleteInput.emergencyName,
+          emergencyPhone: athleteInput.emergencyPhone,
+          medicalNotes: athleteInput.medicalNotes ?? body.medicalNotes,
+        });
+        athleteId = existing.id;
+      } else {
+        const created = await paymentRepository.createAthlete({
+          fullName: athleteInput.fullName,
+          cpf: athleteInput.cpf,
+          email,
+          phone,
+          birthDate,
+          gender,
+          shirtSize: athleteInput.shirtSize ?? body.shirtSizes?.[index],
+          emergencyName: athleteInput.emergencyName,
+          emergencyPhone: athleteInput.emergencyPhone,
+          medicalNotes: athleteInput.medicalNotes ?? body.medicalNotes,
+        });
+        athleteId = created.id;
+      }
+      prepared.push({
+        athleteId,
+        role: athleteInput.role ?? (index === 0 ? 'athlete_a' : `athlete_${index + 1}`),
+      });
+      index += 1;
+    }
+
+    const createdAthleteIds = prepared.map((p) => p.athleteId);
+
+    // 2) Team (se aplicável)
     let teamId: string | null = null;
     const teamName = body.teamName?.trim();
     if (
@@ -337,138 +414,120 @@ export class PublicRegistrationService {
       });
       teamId = team.id;
     }
-    // individual: teamName ignorado
 
     await catalogRepository.incrementOccupiedSlots(category.id, 1);
 
-    const registration = await paymentRepository.createRegistration({
-      eventId: event.id,
-      categoryId: category.id,
-      format,
-      totalPrice,
-      teamId,
-      status: 'draft',
-    });
+    // 3) Registration + vínculos + guardian/waiver/reservation com compensação.
+    // Sem RPC transacional: se falhar após criar a registration, cancela (não apaga).
+    let registrationId: string | null = null;
+    try {
+      const registration = await paymentRepository.createRegistration({
+        eventId: event.id,
+        categoryId: category.id,
+        format,
+        totalPrice,
+        teamId,
+        status: 'draft',
+      });
+      registrationId = registration.id;
 
-    const createdAthleteIds: string[] = [];
-    let index = 0;
-    for (const athleteInput of body.athletes) {
-      const gender = String(athleteInput.gender ?? '').trim();
-      if (!gender) {
-        throw AppError.badRequest('Informe o gênero do atleta.', 'VALIDATION_ERROR');
+      for (const row of prepared) {
+        await paymentRepository.linkRegistrationAthlete({
+          registrationId: registration.id,
+          athleteId: row.athleteId,
+          role: row.role,
+        });
       }
 
-      const existing = await paymentRepository.findAthleteByCpf(athleteInput.cpf);
-      let athleteId: string;
-      if (existing) {
-        await paymentRepository.updateAthlete(existing.id, {
-          fullName: athleteInput.fullName,
-          email: athleteInput.email,
-          phone: athleteInput.phone,
-          birthDate: athleteInput.birthDate,
-          gender,
-          shirtSize: athleteInput.shirtSize ?? body.shirtSizes?.[index],
-          emergencyName: athleteInput.emergencyName,
-          emergencyPhone: athleteInput.emergencyPhone,
-          medicalNotes: athleteInput.medicalNotes ?? body.medicalNotes,
+      // Responsável externo → guardians (modelo real). isAthlete1 / omitido: sem guardian.
+      if (shouldCreateGuardian) {
+        assertValidCpf(responsibleCpf!);
+        await paymentRepository.createGuardian({
+          athleteId: createdAthleteIds[0]!,
+          fullName: responsible!.fullName!,
+          cpf: responsibleCpf!,
+          phone: responsible!.phone!,
+          email: responsible!.email,
+          relationship: 'responsável',
         });
-        athleteId = existing.id;
-      } else {
-        const created = await paymentRepository.createAthlete({
-          fullName: athleteInput.fullName,
-          cpf: athleteInput.cpf,
-          email: athleteInput.email,
-          phone: athleteInput.phone,
-          birthDate: athleteInput.birthDate,
-          gender,
-          shirtSize: athleteInput.shirtSize ?? body.shirtSizes?.[index],
-          emergencyName: athleteInput.emergencyName,
-          emergencyPhone: athleteInput.emergencyPhone,
-          medicalNotes: athleteInput.medicalNotes ?? body.medicalNotes,
-        });
-        athleteId = created.id;
       }
-      createdAthleteIds.push(athleteId);
-      await paymentRepository.linkRegistrationAthlete({
+
+      const waiver = body.waiver;
+      await paymentRepository.createWaiver({
         registrationId: registration.id,
-        athleteId,
-        role: athleteInput.role ?? (index === 0 ? 'athlete_a' : `athlete_${index + 1}`),
+        athleteId: createdAthleteIds[0] ?? null,
+        regulationAccepted: body.termsAccepted === true || waiver?.regulationAccepted === true,
+        lgpdAccepted: body.privacyAccepted === true || waiver?.privacyAccepted === true,
+        imageUseAccepted: waiver?.imageUseAccepted === true,
+        fitnessAccepted: waiver?.fitnessAccepted === true,
+        signatureUrl: signature,
       });
-      index += 1;
-    }
 
-    // Responsável externo → guardians (modelo real). isAthlete1 / omitido: sem guardian.
-    if (shouldCreateGuardian) {
-      assertValidCpf(responsibleCpf!);
-      await paymentRepository.createGuardian({
-        athleteId: createdAthleteIds[0]!,
-        fullName: responsible!.fullName!,
-        cpf: responsibleCpf!,
-        phone: responsible!.phone!,
-        email: responsible!.email,
-        relationship: 'responsável',
+      const reservation = await paymentRepository.createReservation({
+        registrationId: registration.id,
+        categoryId: category.id,
+        quantity: 1,
+        expiresAt: addSeconds(new Date(), 30 * 60).toISOString(),
+        status: 'active',
       });
-    }
 
-    // Waiver (flags + signature_url no modelo Lovable atual)
-    const waiver = body.waiver;
-    await paymentRepository.createWaiver({
-      registrationId: registration.id,
-      athleteId: createdAthleteIds[0] ?? null,
-      regulationAccepted: body.termsAccepted === true || waiver?.regulationAccepted === true,
-      lgpdAccepted: body.privacyAccepted === true || waiver?.privacyAccepted === true,
-      imageUseAccepted: waiver?.imageUseAccepted === true,
-      fitnessAccepted: waiver?.fitnessAccepted === true,
-      signatureUrl: signature,
-    });
+      const { rawToken } = await registrationAccessTokenRepository.issueToken(registration.id);
 
-    const reservation = await paymentRepository.createReservation({
-      registrationId: registration.id,
-      categoryId: category.id,
-      quantity: 1,
-      expiresAt: addSeconds(new Date(), 30 * 60).toISOString(),
-      status: 'active',
-    });
+      const response = {
+        registrationId: registration.id,
+        registrationNumber: toPublicRegistrationNumber(registration.registrationNumber),
+        status: 'draft',
+        amount: totalPrice.toFixed(2),
+        paymentRequired: true,
+        registrationAccessToken: rawToken,
+        outcome: 'NEW_REGISTRATION' as const,
+      };
 
-    const { rawToken } = await registrationAccessTokenRepository.issueToken(registration.id);
+      if (requestId) {
+        await registrationAccessTokenRepository.saveIdempotent({
+          scope: 'public_registration_create',
+          requestId,
+          resourceType: 'registration',
+          resourceId: registration.id,
+          responseSnapshot: response,
+        });
+      }
 
-    const response = {
-      registrationId: registration.id,
-      registrationNumber: toPublicRegistrationNumber(registration.registrationNumber),
-      status: 'draft',
-      amount: totalPrice.toFixed(2),
-      paymentRequired: true,
-      registrationAccessToken: rawToken,
-      outcome: 'NEW_REGISTRATION' as const,
-    };
-
-    if (requestId) {
-      await registrationAccessTokenRepository.saveIdempotent({
-        scope: 'public_registration_create',
-        requestId,
-        resourceType: 'registration',
-        resourceId: registration.id,
-        responseSnapshot: response,
+      logger.info('Inscrição pública criada', {
+        registrationId: registration.id,
+        eventId: event.id,
+        categoryId: category.id,
+        athleteCount: body.athletes.length,
+        teamId,
+        hasGuardian: shouldCreateGuardian,
+        hasWaiver: true,
+        signature: redactSignature(signature),
+        amount: response.amount,
+        reservationId: reservation.id,
+        isAthlete1Responsible,
+        outcome: 'NEW_REGISTRATION',
+        operation: 'public_registration_create',
       });
+
+      return response;
+    } catch (err) {
+      if (registrationId) {
+        try {
+          await paymentRepository.updateRegistrationStatus(registrationId, 'cancelled');
+          logger.warn('Inscrição parcial cancelada após falha (compensação)', {
+            registrationId,
+            operation: 'public_registration_create_compensate',
+          });
+        } catch (compensateErr) {
+          logger.error('Falha ao compensar registration parcial', {
+            registrationId,
+            error: compensateErr instanceof Error ? compensateErr.message : String(compensateErr),
+            operation: 'public_registration_create_compensate',
+          });
+        }
+      }
+      throw err;
     }
-
-    logger.info('Inscrição pública criada', {
-      registrationId: registration.id,
-      eventId: event.id,
-      categoryId: category.id,
-      athleteCount: body.athletes.length,
-      teamId,
-      hasGuardian: shouldCreateGuardian,
-      hasWaiver: true,
-      signature: redactSignature(signature),
-      amount: response.amount,
-      reservationId: reservation.id,
-      isAthlete1Responsible,
-      outcome: 'NEW_REGISTRATION',
-      operation: 'public_registration_create',
-    });
-
-    return response;
   }
 
   async getReceipt(registrationId: string): Promise<Record<string, unknown>> {

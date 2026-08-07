@@ -1481,9 +1481,9 @@ export class PaymentRepository {
   async createAthlete(input: {
     fullName: string;
     cpf: string;
-    email?: string | null;
-    phone?: string | null;
-    birthDate?: string | null;
+    email: string;
+    phone: string;
+    birthDate: string;
     gender: string;
     shirtSize?: string | null;
     emergencyName?: string | null;
@@ -1494,14 +1494,32 @@ export class PaymentRepository {
     if (!gender) {
       throw AppError.badRequest('Informe o gênero do atleta.', 'VALIDATION_ERROR');
     }
+    const email = String(input.email ?? '').trim();
+    if (!email) {
+      throw AppError.badRequest(
+        'Informe um e-mail válido para o atleta.',
+        'VALIDATION_ERROR',
+      );
+    }
+    const phone = String(input.phone ?? '').trim();
+    if (!phone) {
+      throw AppError.badRequest('Informe o telefone do atleta.', 'VALIDATION_ERROR');
+    }
+    const birthDate = String(input.birthDate ?? '').trim();
+    if (!birthDate) {
+      throw AppError.badRequest(
+        'Informe a data de nascimento do atleta.',
+        'VALIDATION_ERROR',
+      );
+    }
 
     const record: AthleteRecord = {
       id: randomUUID(),
       fullName: input.fullName.trim(),
       cpf: input.cpf.replace(/\D/g, ''),
-      email: input.email?.trim() || null,
-      phone: input.phone?.trim() || null,
-      birthDate: input.birthDate?.trim() || null,
+      email,
+      phone,
+      birthDate,
       gender,
       shirtSize: input.shirtSize?.trim() || null,
       emergencyName: input.emergencyName?.trim() || null,
@@ -1514,10 +1532,14 @@ export class PaymentRepository {
       return record;
     }
 
+    // Sempre envia colunas NOT NULL sem default (email/phone/birth_date/gender/…).
     const insert: Record<string, unknown> = {
       id: record.id,
       full_name: record.fullName,
       cpf: record.cpf,
+      email: record.email,
+      phone: record.phone,
+      birth_date: record.birthDate,
       gender: record.gender,
       is_public_profile: false,
       consent_image: true,
@@ -1525,9 +1547,6 @@ export class PaymentRepository {
       consent_whatsapp: true,
       consent_email: true,
     };
-    if (record.email) insert.email = record.email;
-    if (record.phone) insert.phone = record.phone;
-    if (record.birthDate) insert.birth_date = record.birthDate;
     if (record.shirtSize) insert.shirt_size = record.shirtSize;
     if (record.emergencyName) insert.emergency_name = record.emergencyName;
     if (record.emergencyPhone) insert.emergency_phone = record.emergencyPhone;
@@ -1696,6 +1715,34 @@ export class PaymentRepository {
       categoryId: String(data.category_id),
       name: String(data.name),
       isPublic: Boolean(data.is_public),
+    };
+  }
+
+  async findWaiverByRegistrationId(registrationId: string): Promise<WaiverRecord | null> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return (
+        Array.from(waivers.values()).find((w) => w.registrationId === registrationId) ?? null
+      );
+    }
+    const { data, error } = await supabase
+      .from('waivers')
+      .select('*')
+      .eq('registration_id', registrationId)
+      .limit(1)
+      .maybeSingle();
+    if (error) throw AppError.internal(error.message);
+    if (!data) return null;
+    return {
+      id: String(data.id),
+      registrationId: String(data.registration_id),
+      athleteId: (data.athlete_id as string) ?? null,
+      regulationAccepted: Boolean(data.regulation_accepted),
+      lgpdAccepted: Boolean(data.lgpd_accepted),
+      imageUseAccepted: Boolean(data.image_use_accepted),
+      fitnessDeclarationAccepted: Boolean(data.fitness_declaration_accepted),
+      signatureUrl: (data.signature_url as string) ?? null,
+      signedAt: (data.signed_at as string) ?? null,
     };
   }
 

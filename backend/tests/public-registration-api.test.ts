@@ -29,6 +29,23 @@ const CPF_B = '39053344705';
 const CPF_C = '11144477735';
 const CPF_RESP = '85351346893';
 
+function ath(
+  cpf: string,
+  name: string,
+  gender = 'masculino',
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    fullName: name,
+    cpf,
+    email: `${cpf}@example.com`,
+    phone: '11999999999',
+    birthDate: '1990-01-01',
+    gender,
+    ...extra,
+  };
+}
+
 describe('API pública de inscrição', () => {
   let eventId: string;
   let categoryId: string;
@@ -103,7 +120,16 @@ describe('API pública de inscrição', () => {
       .send({
         eventId,
         categoryId,
-        athletes: [{ fullName: 'Atleta A', cpf: CPF_A, gender: 'masculino' }],
+        athletes: [
+          {
+            fullName: 'Atleta A',
+            cpf: CPF_A,
+            email: 'atleta-a@example.com',
+            phone: '11999999999',
+            birthDate: '1990-01-01',
+            gender: 'masculino',
+          },
+        ],
         termsAccepted: true,
         privacyAccepted: true,
         ...overrides,
@@ -373,10 +399,7 @@ describe('API pública de inscrição', () => {
 
     const res = await createRegistration({
       categoryId: duplaId,
-      athletes: [
-        { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-        { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
-      ],
+      athletes: [ath(CPF_A, 'A1'), ath(CPF_B, 'A2', 'feminino')],
     });
     expect(res.status).toBe(201);
     expect(res.body.amount).toBe('399.80');
@@ -401,10 +424,7 @@ describe('API pública de inscrição', () => {
     });
     const res = await createRegistration({
       categoryId: duplaId,
-      athletes: [
-        { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-        { fullName: 'A2', cpf: CPF_A, gender: 'masculino' },
-      ],
+      athletes: [ath(CPF_A, 'A1'), ath(CPF_A, 'A2')],
     });
     expect(res.status).toBe(400);
   });
@@ -429,7 +449,7 @@ describe('API pública de inscrição', () => {
     });
     const second = await createRegistration({
       categoryId: secondCat,
-      athletes: [{ fullName: 'Outro', cpf: CPF_B, gender: 'masculino' }],
+      athletes: [ath(CPF_B, 'Outro')],
     });
 
     const app = createApp();
@@ -611,8 +631,8 @@ describe('API pública de inscrição', () => {
         categoryId: duplaId,
         teamName: 'Time Relâmpago',
         athletes: [
-          { fullName: 'A1', cpf: CPF_A, phone: '11911112222', gender: 'masculino' },
-          { fullName: 'A2', cpf: CPF_B, phone: '11933334444', gender: 'feminino' },
+          ath(CPF_A, 'A1', 'masculino', { phone: '11911112222' }),
+          ath(CPF_B, 'A2', 'feminino', { phone: '11933334444' }),
         ],
       });
       expect(res.status).toBe(201);
@@ -631,11 +651,7 @@ describe('API pública de inscrição', () => {
         teamName: 'Trio Elite',
         teamSize: 99,
         categoryFormat: 'individual',
-        athletes: [
-          { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-          { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
-          { fullName: 'A3', cpf: CPF_C, gender: 'outro' },
-        ],
+        athletes: [ath(CPF_A, 'A1'), ath(CPF_B, 'A2', 'feminino'), ath(CPF_C, 'A3', 'outro')],
       });
       expect(ok.status).toBe(201);
       // Lote vigente do evento (beforeEach): 199.90 × team_size 3
@@ -648,7 +664,7 @@ describe('API pública de inscrição', () => {
       const duplaId = seedDupla();
       const res = await createRegistration({
         categoryId: duplaId,
-        athletes: [{ fullName: 'A1', cpf: CPF_A, gender: 'masculino' }],
+        athletes: [ath(CPF_A, 'A1')],
       });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('INVALID_ATHLETE_COUNT');
@@ -658,11 +674,7 @@ describe('API pública de inscrição', () => {
       const equipeId = seedEquipe(2);
       const res = await createRegistration({
         categoryId: equipeId,
-        athletes: [
-          { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-          { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
-          { fullName: 'A3', cpf: CPF_C, gender: 'outro' },
-        ],
+        athletes: [ath(CPF_A, 'A1'), ath(CPF_B, 'A2', 'feminino'), ath(CPF_C, 'A3', 'outro')],
       });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('INVALID_ATHLETE_COUNT');
@@ -672,10 +684,7 @@ describe('API pública de inscrição', () => {
       const duplaId = seedDupla();
       const res = await createRegistration({
         categoryId: duplaId,
-        athletes: [
-          { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-          { fullName: 'A2', cpf: CPF_A, gender: 'masculino' },
-        ],
+        athletes: [ath(CPF_A, 'A1'), ath(CPF_A, 'A2')],
       });
       expect(res.status).toBe(400);
     });
@@ -740,8 +749,8 @@ describe('API pública de inscrição', () => {
         teamName: 'Idem Team',
         requestId: 'idem-elite-cdt-registration-001',
         athletes: [
-          { fullName: 'A1', cpf: CPF_A, email: 'a1@example.com', gender: 'masculino' },
-          { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
+          ath(CPF_A, 'A1', 'masculino', { email: 'a1@example.com' }),
+          ath(CPF_B, 'A2', 'feminino'),
         ],
         responsible: {
           isAthlete1: false,
@@ -777,10 +786,7 @@ describe('API pública de inscrição', () => {
         .send({
           eventId,
           categoryId: duplaId,
-          athletes: [
-            { fullName: 'B1', cpf: CPF_C, gender: 'masculino' },
-            { fullName: 'B2', cpf: CPF_RESP, gender: 'feminino' },
-          ],
+          athletes: [ath(CPF_C, 'B1'), ath(CPF_RESP, 'B2', 'feminino')],
           teamName: 'Header Team',
           termsAccepted: true,
           privacyAccepted: true,
@@ -793,10 +799,7 @@ describe('API pública de inscrição', () => {
         .send({
           eventId,
           categoryId: duplaId,
-          athletes: [
-            { fullName: 'B1', cpf: CPF_C, gender: 'masculino' },
-            { fullName: 'B2', cpf: CPF_RESP, gender: 'feminino' },
-          ],
+          athletes: [ath(CPF_C, 'B1'), ath(CPF_RESP, 'B2', 'feminino')],
           teamName: 'Header Team',
           termsAccepted: true,
           privacyAccepted: true,

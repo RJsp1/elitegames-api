@@ -19,6 +19,18 @@ import { __testPublicRegistrationMemory } from '../src/services/public/public-re
 const CPF_A = '52998224725';
 const CPF_B = '39053344705';
 
+function athlete(overrides: Record<string, unknown> = {}) {
+  return {
+    fullName: 'Com Gender',
+    cpf: CPF_A,
+    email: 'a@example.com',
+    phone: '11999999999',
+    birthDate: '1990-01-01',
+    gender: 'masculino',
+    ...overrides,
+  };
+}
+
 describe('athletes.gender obrigatório', () => {
   let eventId: string;
   let categoryId: string;
@@ -95,9 +107,8 @@ describe('athletes.gender obrigatório', () => {
   }
 
   it('atleta sem gender → 400 VALIDATION_ERROR, sem INSERT', async () => {
-    const res = await post({
-      athletes: [{ fullName: 'Sem Gender', cpf: CPF_A }],
-    });
+    const { gender: _g, ...rest } = athlete();
+    const res = await post({ athletes: [rest] });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(JSON.stringify(res.body)).toMatch(/gênero|genero|gender/i);
@@ -106,7 +117,7 @@ describe('athletes.gender obrigatório', () => {
 
   it('gender vazio → 400', async () => {
     const res = await post({
-      athletes: [{ fullName: 'Vazio', cpf: CPF_A, gender: '   ' }],
+      athletes: [athlete({ gender: '   ' })],
     });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -115,7 +126,7 @@ describe('athletes.gender obrigatório', () => {
 
   it('gender válido → cria atleta', async () => {
     const res = await post({
-      athletes: [{ fullName: 'Com Gender', cpf: CPF_A, gender: 'masculino' }],
+      athletes: [athlete()],
     });
     expect(res.status).toBe(201);
     const athletes = __testPublicRegistrationMemory.listAthletes();
@@ -124,13 +135,12 @@ describe('athletes.gender obrigatório', () => {
   });
 
   it('dupla: todos os atletas precisam de gender', async () => {
+    const incomplete = athlete({ cpf: CPF_B, fullName: 'A2', email: 'b@example.com' });
+    delete (incomplete as { gender?: string }).gender;
     const missing = await post({
       categoryId: duplaId,
       teamName: 'Dupla X',
-      athletes: [
-        { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-        { fullName: 'A2', cpf: CPF_B },
-      ],
+      athletes: [athlete({ cpf: CPF_A }), incomplete],
     });
     expect(missing.status).toBe(400);
     expect(missing.body.error.code).toBe('VALIDATION_ERROR');
@@ -140,8 +150,13 @@ describe('athletes.gender obrigatório', () => {
       categoryId: duplaId,
       teamName: 'Dupla Ok',
       athletes: [
-        { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
-        { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
+        athlete({ cpf: CPF_A }),
+        athlete({
+          cpf: CPF_B,
+          fullName: 'A2',
+          email: 'b@example.com',
+          gender: 'feminino',
+        }),
       ],
     });
     expect(ok.status).toBe(201);

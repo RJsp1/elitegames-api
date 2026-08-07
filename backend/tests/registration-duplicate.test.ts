@@ -129,6 +129,7 @@ describe('Anti-duplicidade inscrição + PIX', () => {
       cpf,
       email: `${cpf}@t.com`,
       phone: '11999999999',
+      birthDate: '1990-01-01',
       gender: 'masculino',
     };
   }

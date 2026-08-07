@@ -24,6 +24,56 @@ export type RegistrationCreateOutcome =
   | 'REUSED_PENDING_REGISTRATION'
   | 'ALREADY_PAID';
 
+/**
+ * Draft reutilizável = completa o suficiente para pagamento
+ * (tem atletas vinculados + waiver). Draft técnica/incompleta (ex.: órfã
+ * após falha mid-create) NÃO bloqueia nem é reutilizada.
+ */
+export type RegistrationCompletenessDeps = {
+  hasLinkedAthletes: (registrationId: string) => Promise<boolean>;
+  hasWaiver: (registrationId: string) => Promise<boolean>;
+};
+
+export async function isCompleteReusableDraft(
+  registrationId: string,
+  deps: RegistrationCompletenessDeps,
+): Promise<boolean> {
+  const [athletes, waiver] = await Promise.all([
+    deps.hasLinkedAthletes(registrationId),
+    deps.hasWaiver(registrationId),
+  ]);
+  return athletes && waiver;
+}
+
+/**
+ * Filtra candidatos de bloqueio/reuso:
+ * - paid/confirmed: sempre
+ * - pending_payment: sempre (cobrança real em aberto)
+ * - draft: só se completa (atletas + waiver)
+ */
+export async function filterBlockingRegistrations(
+  rows: RegistrationRecord[],
+  deps: RegistrationCompletenessDeps,
+): Promise<RegistrationRecord[]> {
+  const out: RegistrationRecord[] = [];
+  for (const row of rows) {
+    if (PAID_REGISTRATION_STATUSES.has(row.status)) {
+      out.push(row);
+      continue;
+    }
+    if (row.status === 'pending_payment') {
+      out.push(row);
+      continue;
+    }
+    if (row.status === 'draft') {
+      if (await isCompleteReusableDraft(row.id, deps)) {
+        out.push(row);
+      }
+    }
+  }
+  return out;
+}
+
 /** Lock key: event + category + sorted CPFs (covers individual and team members). */
 export function buildDuplicateLockKey(
   eventId: string,
@@ -37,6 +87,7 @@ export function buildDuplicateLockKey(
 /**
  * Prefer paid/confirmed; else oldest reusable (draft/pending_payment).
  * Cancelled / refunded / waitlist are ignored (Case D).
+ * Caller must pass only complete drafts (see filterBlockingRegistrations).
  */
 export function pickBlockingRegistration(
   rows: RegistrationRecord[],

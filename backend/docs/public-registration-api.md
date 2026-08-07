@@ -142,7 +142,9 @@ Body (não enviar preço — `amount`/`totalPrice`/`price` são **ignorados**):
 }
 ```
 
-Compatibilidade legado: `termsAccepted`/`privacyAccepted` no topo; `responsible` sem `isAthlete1`; `athletes` só com `fullName`+`cpf`.
+Campos obrigatórios em cada `athletes[]` (alinhados a `public.athletes` NOT NULL sem default): `fullName`, `cpf`, `email`, `phone`, `birthDate`, `gender`.
+
+Compatibilidade legado: `termsAccepted`/`privacyAccepted` no topo; `responsible` sem `isAthlete1`.
 
 Quantidade de atletas: **sempre** a da categoria no banco (`individual=1`, `dupla=2`, `equipe=team_size`). `categoryFormat`/`teamSize` do cliente são ignorados.
 
