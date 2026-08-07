@@ -14,7 +14,7 @@ import { addSeconds, isExpired, nowIso } from '../../utils/date.js';
 import { generateTxid } from '../../utils/txid.js';
 import { logger } from '../../utils/logger.js';
 import { assertValidCpf, maskCpfDisplay } from '../../utils/cpf.js';
-import { getPaymentProvider } from './payment-provider.factory.js';
+import { getPaymentProvider, assertSicrediChargeResult, resolveConfiguredProviderName, SICREDI_PROVIDER_CODE } from './payment-provider.factory.js';
 import { qrCodeService } from '../qr-code.service.js';
 import { centsToPixAmount } from '../../utils/money.js';
 import { redactSensitiveData } from '../../utils/redact-sensitive-data.js';
@@ -28,7 +28,7 @@ function formatAmount(value: number): string {
 }
 
 function resolveProviderCode(): 'mock' | 'sicredi' {
-  return getEnv().PAYMENT_PROVIDER === 'sicredi' ? 'sicredi' : 'mock';
+  return resolveConfiguredProviderName();
 }
 
 async function toResponse(
@@ -201,6 +201,10 @@ export class PaymentService {
         paymentId: payment.id,
         registrationId: registration.id,
       });
+
+      if (providerCode === SICREDI_PROVIDER_CODE) {
+        assertSicrediChargeResult(chargeResult);
+      }
 
       const qrCodeDataUrl = await qrCodeService.toDataUrl(chargeResult.pixCopiaECola);
       const expiresAt =
@@ -442,6 +446,10 @@ export class PaymentService {
         paymentId: payment.id,
         registrationId: registration.id,
       });
+
+      if (providerCode === SICREDI_PROVIDER_CODE) {
+        assertSicrediChargeResult(chargeResult);
+      }
 
       const qrCodeDataUrl = await qrCodeService.toDataUrl(chargeResult.pixCopiaECola);
       const expiresAt =
