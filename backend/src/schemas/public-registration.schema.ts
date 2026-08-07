@@ -17,7 +17,16 @@ const athleteSchema = z.object({
   email: z.string().email().max(160).optional(),
   phone: z.string().min(8).max(20).optional(),
   birthDate: z.string().max(32).optional(),
-  gender: z.string().max(40).optional(),
+  /**
+   * Obrigatório: `athletes.gender` é NOT NULL no banco.
+   * Valores usados pelo formulário Elite CDT: masculino | feminino | outro.
+   * Coluna é TEXT livre — exigimos string não vazia (sem inventar default).
+   */
+  gender: z
+    .string({ error: 'Informe o gênero do atleta.' })
+    .trim()
+    .min(1, 'Informe o gênero do atleta.')
+    .max(40, 'Gênero inválido.'),
   shirtSize: z.string().max(10).optional(),
   emergencyName: z.string().max(200).optional(),
   emergencyPhone: z.string().max(20).optional(),

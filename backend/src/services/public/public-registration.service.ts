@@ -353,6 +353,11 @@ export class PublicRegistrationService {
     const createdAthleteIds: string[] = [];
     let index = 0;
     for (const athleteInput of body.athletes) {
+      const gender = String(athleteInput.gender ?? '').trim();
+      if (!gender) {
+        throw AppError.badRequest('Informe o gênero do atleta.', 'VALIDATION_ERROR');
+      }
+
       const existing = await paymentRepository.findAthleteByCpf(athleteInput.cpf);
       let athleteId: string;
       if (existing) {
@@ -361,7 +366,7 @@ export class PublicRegistrationService {
           email: athleteInput.email,
           phone: athleteInput.phone,
           birthDate: athleteInput.birthDate,
-          gender: athleteInput.gender,
+          gender,
           shirtSize: athleteInput.shirtSize ?? body.shirtSizes?.[index],
           emergencyName: athleteInput.emergencyName,
           emergencyPhone: athleteInput.emergencyPhone,
@@ -375,7 +380,7 @@ export class PublicRegistrationService {
           email: athleteInput.email,
           phone: athleteInput.phone,
           birthDate: athleteInput.birthDate,
-          gender: athleteInput.gender,
+          gender,
           shirtSize: athleteInput.shirtSize ?? body.shirtSizes?.[index],
           emergencyName: athleteInput.emergencyName,
           emergencyPhone: athleteInput.emergencyPhone,

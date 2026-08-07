@@ -1484,12 +1484,17 @@ export class PaymentRepository {
     email?: string | null;
     phone?: string | null;
     birthDate?: string | null;
-    gender?: string | null;
+    gender: string;
     shirtSize?: string | null;
     emergencyName?: string | null;
     emergencyPhone?: string | null;
     medicalNotes?: string | null;
   }): Promise<AthleteRecord> {
+    const gender = String(input.gender ?? '').trim();
+    if (!gender) {
+      throw AppError.badRequest('Informe o gênero do atleta.', 'VALIDATION_ERROR');
+    }
+
     const record: AthleteRecord = {
       id: randomUUID(),
       fullName: input.fullName.trim(),
@@ -1497,7 +1502,7 @@ export class PaymentRepository {
       email: input.email?.trim() || null,
       phone: input.phone?.trim() || null,
       birthDate: input.birthDate?.trim() || null,
-      gender: input.gender?.trim() || null,
+      gender,
       shirtSize: input.shirtSize?.trim() || null,
       emergencyName: input.emergencyName?.trim() || null,
       emergencyPhone: input.emergencyPhone?.trim() || null,
@@ -1513,6 +1518,7 @@ export class PaymentRepository {
       id: record.id,
       full_name: record.fullName,
       cpf: record.cpf,
+      gender: record.gender,
       is_public_profile: false,
       consent_image: true,
       consent_lgpd: true,
@@ -1522,7 +1528,6 @@ export class PaymentRepository {
     if (record.email) insert.email = record.email;
     if (record.phone) insert.phone = record.phone;
     if (record.birthDate) insert.birth_date = record.birthDate;
-    if (record.gender) insert.gender = record.gender;
     if (record.shirtSize) insert.shirt_size = record.shirtSize;
     if (record.emergencyName) insert.emergency_name = record.emergencyName;
     if (record.emergencyPhone) insert.emergency_phone = record.emergencyPhone;

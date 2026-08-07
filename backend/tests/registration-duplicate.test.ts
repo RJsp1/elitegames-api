@@ -124,7 +124,13 @@ describe('Anti-duplicidade inscrição + PIX', () => {
   });
 
   function athlete(cpf = CPF_A, name = 'Atleta A') {
-    return { fullName: name, cpf, email: `${cpf}@t.com`, phone: '11999999999' };
+    return {
+      fullName: name,
+      cpf,
+      email: `${cpf}@t.com`,
+      phone: '11999999999',
+      gender: 'masculino',
+    };
   }
 
   async function postRegistration(overrides: Record<string, unknown> = {}) {

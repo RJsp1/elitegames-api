@@ -103,7 +103,7 @@ describe('API pública de inscrição', () => {
       .send({
         eventId,
         categoryId,
-        athletes: [{ fullName: 'Atleta A', cpf: CPF_A }],
+        athletes: [{ fullName: 'Atleta A', cpf: CPF_A, gender: 'masculino' }],
         termsAccepted: true,
         privacyAccepted: true,
         ...overrides,
@@ -374,8 +374,8 @@ describe('API pública de inscrição', () => {
     const res = await createRegistration({
       categoryId: duplaId,
       athletes: [
-        { fullName: 'A1', cpf: CPF_A },
-        { fullName: 'A2', cpf: CPF_B },
+        { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
+        { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
       ],
     });
     expect(res.status).toBe(201);
@@ -402,8 +402,8 @@ describe('API pública de inscrição', () => {
     const res = await createRegistration({
       categoryId: duplaId,
       athletes: [
-        { fullName: 'A1', cpf: CPF_A },
-        { fullName: 'A2', cpf: CPF_A },
+        { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
+        { fullName: 'A2', cpf: CPF_A, gender: 'masculino' },
       ],
     });
     expect(res.status).toBe(400);
@@ -429,7 +429,7 @@ describe('API pública de inscrição', () => {
     });
     const second = await createRegistration({
       categoryId: secondCat,
-      athletes: [{ fullName: 'Outro', cpf: CPF_B }],
+      athletes: [{ fullName: 'Outro', cpf: CPF_B, gender: 'masculino' }],
     });
 
     const app = createApp();
@@ -611,8 +611,8 @@ describe('API pública de inscrição', () => {
         categoryId: duplaId,
         teamName: 'Time Relâmpago',
         athletes: [
-          { fullName: 'A1', cpf: CPF_A, phone: '11911112222' },
-          { fullName: 'A2', cpf: CPF_B, phone: '11933334444' },
+          { fullName: 'A1', cpf: CPF_A, phone: '11911112222', gender: 'masculino' },
+          { fullName: 'A2', cpf: CPF_B, phone: '11933334444', gender: 'feminino' },
         ],
       });
       expect(res.status).toBe(201);
@@ -632,9 +632,9 @@ describe('API pública de inscrição', () => {
         teamSize: 99,
         categoryFormat: 'individual',
         athletes: [
-          { fullName: 'A1', cpf: CPF_A },
-          { fullName: 'A2', cpf: CPF_B },
-          { fullName: 'A3', cpf: CPF_C },
+          { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
+          { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
+          { fullName: 'A3', cpf: CPF_C, gender: 'outro' },
         ],
       });
       expect(ok.status).toBe(201);
@@ -648,7 +648,7 @@ describe('API pública de inscrição', () => {
       const duplaId = seedDupla();
       const res = await createRegistration({
         categoryId: duplaId,
-        athletes: [{ fullName: 'A1', cpf: CPF_A }],
+        athletes: [{ fullName: 'A1', cpf: CPF_A, gender: 'masculino' }],
       });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('INVALID_ATHLETE_COUNT');
@@ -659,9 +659,9 @@ describe('API pública de inscrição', () => {
       const res = await createRegistration({
         categoryId: equipeId,
         athletes: [
-          { fullName: 'A1', cpf: CPF_A },
-          { fullName: 'A2', cpf: CPF_B },
-          { fullName: 'A3', cpf: CPF_C },
+          { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
+          { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
+          { fullName: 'A3', cpf: CPF_C, gender: 'outro' },
         ],
       });
       expect(res.status).toBe(400);
@@ -673,8 +673,8 @@ describe('API pública de inscrição', () => {
       const res = await createRegistration({
         categoryId: duplaId,
         athletes: [
-          { fullName: 'A1', cpf: CPF_A },
-          { fullName: 'A2', cpf: CPF_A },
+          { fullName: 'A1', cpf: CPF_A, gender: 'masculino' },
+          { fullName: 'A2', cpf: CPF_A, gender: 'masculino' },
         ],
       });
       expect(res.status).toBe(400);
@@ -740,8 +740,8 @@ describe('API pública de inscrição', () => {
         teamName: 'Idem Team',
         requestId: 'idem-elite-cdt-registration-001',
         athletes: [
-          { fullName: 'A1', cpf: CPF_A, email: 'a1@example.com' },
-          { fullName: 'A2', cpf: CPF_B },
+          { fullName: 'A1', cpf: CPF_A, email: 'a1@example.com', gender: 'masculino' },
+          { fullName: 'A2', cpf: CPF_B, gender: 'feminino' },
         ],
         responsible: {
           isAthlete1: false,
@@ -778,8 +778,8 @@ describe('API pública de inscrição', () => {
           eventId,
           categoryId: duplaId,
           athletes: [
-            { fullName: 'B1', cpf: CPF_C },
-            { fullName: 'B2', cpf: CPF_RESP },
+            { fullName: 'B1', cpf: CPF_C, gender: 'masculino' },
+            { fullName: 'B2', cpf: CPF_RESP, gender: 'feminino' },
           ],
           teamName: 'Header Team',
           termsAccepted: true,
@@ -794,8 +794,8 @@ describe('API pública de inscrição', () => {
           eventId,
           categoryId: duplaId,
           athletes: [
-            { fullName: 'B1', cpf: CPF_C },
-            { fullName: 'B2', cpf: CPF_RESP },
+            { fullName: 'B1', cpf: CPF_C, gender: 'masculino' },
+            { fullName: 'B2', cpf: CPF_RESP, gender: 'feminino' },
           ],
           teamName: 'Header Team',
           termsAccepted: true,
