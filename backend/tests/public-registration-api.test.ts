@@ -549,13 +549,7 @@ describe('API pública de inscrição', () => {
         teamSize,
         capacity: 40,
       });
-      seedPriceBatchForTest({
-        id: randomUUID(),
-        eventId,
-        name: 'Lote equipe elite',
-        pricePerAthlete: 100,
-        categoryIds: [equipeId],
-      });
+      // Usa o lote do beforeEach (199.90, categoryIds null) — evita lote concorrente flaky.
       return equipeId;
     }
 

@@ -1658,21 +1658,29 @@ export class PaymentRepository {
       return record;
     }
 
+    // `registrations.registration_number` é INT (sequence). Nunca enviar "INS-…" —
+    // isso gera: invalid input syntax for type integer.
+    // Só persiste número puro quando o caller passa um inteiro; senão usa o DEFAULT nextval.
+    const insertRow: Record<string, unknown> = {
+      id: record.id,
+      event_id: record.eventId,
+      category_id: record.categoryId,
+      team_id: record.teamId,
+      format: record.format,
+      total_price: record.totalPrice,
+      status: record.status,
+      reservation_id: record.reservationId,
+      created_at: record.createdAt,
+      updated_at: record.updatedAt,
+    };
+    const numericNumber = String(input.registrationNumber ?? '').trim();
+    if (/^\d+$/.test(numericNumber)) {
+      insertRow.registration_number = Number(numericNumber);
+    }
+
     const { data, error } = await supabase
       .from('registrations')
-      .insert({
-        id: record.id,
-        event_id: record.eventId,
-        category_id: record.categoryId,
-        team_id: record.teamId,
-        registration_number: record.registrationNumber,
-        format: record.format,
-        total_price: record.totalPrice,
-        status: record.status,
-        reservation_id: record.reservationId,
-        created_at: record.createdAt,
-        updated_at: record.updatedAt,
-      })
+      .insert(insertRow)
       .select('*')
       .single();
     if (error) throw AppError.internal(error.message);

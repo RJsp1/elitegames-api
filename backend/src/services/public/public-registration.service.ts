@@ -27,6 +27,19 @@ function moneyFromCents(cents: number): string {
   return centsToPixAmount(cents);
 }
 
+/**
+ * Número amigável para o cliente. A coluna `registrations.registration_number` é INT;
+ * o valor persistido é numérico. Na resposta pública prefixamos INS- quando vier só dígitos.
+ * Nunca usar este valor como chave de relacionamento (usar registrationId UUID).
+ */
+export function toPublicRegistrationNumber(value: string | number | null | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return raw;
+  if (/^INS-/i.test(raw)) return raw;
+  if (/^\d+$/.test(raw)) return `INS-${raw}`;
+  return raw;
+}
+
 /** Contagem exigida: vem da categoria no banco (teamSize), não do frontend. */
 export function expectedAthleteCountFromCategory(category: PublicCategoryRecord): number {
   const normalized = String(category.format ?? '').toLowerCase();
@@ -313,7 +326,7 @@ export class PublicRegistrationService {
 
     const response = {
       registrationId: registration.id,
-      registrationNumber: registration.registrationNumber,
+      registrationNumber: toPublicRegistrationNumber(registration.registrationNumber),
       status: 'draft',
       amount: totalPrice.toFixed(2),
       paymentRequired: true,
@@ -366,7 +379,7 @@ export class PublicRegistrationService {
       : null;
 
     return {
-      registrationNumber: registration.registrationNumber,
+      registrationNumber: toPublicRegistrationNumber(registration.registrationNumber),
       status: registration.status,
       amount: Number(registration.totalPrice).toFixed(2),
       paidAt: paid?.paidAt ?? null,
