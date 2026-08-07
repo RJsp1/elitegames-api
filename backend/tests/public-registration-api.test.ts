@@ -778,8 +778,8 @@ describe('API pública de inscrição', () => {
           eventId,
           categoryId: duplaId,
           athletes: [
-            { fullName: 'B1', cpf: CPF_A },
-            { fullName: 'B2', cpf: CPF_B },
+            { fullName: 'B1', cpf: CPF_C },
+            { fullName: 'B2', cpf: CPF_RESP },
           ],
           teamName: 'Header Team',
           termsAccepted: true,
@@ -794,8 +794,8 @@ describe('API pública de inscrição', () => {
           eventId,
           categoryId: duplaId,
           athletes: [
-            { fullName: 'B1', cpf: CPF_A },
-            { fullName: 'B2', cpf: CPF_B },
+            { fullName: 'B1', cpf: CPF_C },
+            { fullName: 'B2', cpf: CPF_RESP },
           ],
           teamName: 'Header Team',
           termsAccepted: true,

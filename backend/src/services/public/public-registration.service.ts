@@ -22,6 +22,11 @@ import type {
   PublicCategoryRecord,
   PublicEventRecord,
 } from '../../types/public-catalog.types.js';
+import {
+  buildDuplicateLockKey,
+  pickBlockingRegistration,
+  withRegistrationCreateLock,
+} from './registration-duplicate.js';
 
 function moneyFromCents(cents: number): string {
   return centsToPixAmount(cents);
@@ -178,6 +183,105 @@ export class PublicRegistrationService {
       throw AppError.badRequest('Categoria sem lote de preço válido', 'PRICE_BATCH_UNAVAILABLE');
     }
 
+    const athleteCpfs = body.athletes.map((a) => normalizeCpfDigits(a.cpf));
+    const lockKey = buildDuplicateLockKey(event.id, category.id, athleteCpfs);
+
+    try {
+      return await withRegistrationCreateLock(lockKey, async () => {
+        // Re-check idempotency inside lock (concurrent same requestId).
+        if (requestId) {
+          const again = await registrationAccessTokenRepository.findIdempotent(
+            'public_registration_create',
+            requestId,
+          );
+          if (again?.responseSnapshot) return again.responseSnapshot;
+        }
+
+        const blocking = await paymentRepository.findBlockingRegistrationsForAthletes({
+          eventId: event.id,
+          categoryId: category.id,
+          athleteCpfs,
+        });
+        const decision = pickBlockingRegistration(blocking);
+
+        if (decision?.kind === 'paid') {
+          throw AppError.conflict(
+            'Você já possui uma inscrição confirmada nesta categoria.',
+            'REGISTRATION_ALREADY_PAID',
+            {
+              outcome: 'ALREADY_PAID',
+              registrationId: decision.registration.id,
+              registrationNumber: toPublicRegistrationNumber(
+                decision.registration.registrationNumber,
+              ),
+              status: decision.registration.status,
+            },
+          );
+        }
+
+        if (decision?.kind === 'reusable') {
+          const { rawToken } = await registrationAccessTokenRepository.issueToken(
+            decision.registration.id,
+          );
+          const response = {
+            registrationId: decision.registration.id,
+            registrationNumber: toPublicRegistrationNumber(
+              decision.registration.registrationNumber,
+            ),
+            status: decision.registration.status,
+            amount: Number(decision.registration.totalPrice).toFixed(2),
+            paymentRequired: true,
+            registrationAccessToken: rawToken,
+            outcome: 'REUSED_PENDING_REGISTRATION' as const,
+          };
+          if (requestId) {
+            await registrationAccessTokenRepository.saveIdempotent({
+              scope: 'public_registration_create',
+              requestId,
+              resourceType: 'registration',
+              resourceId: decision.registration.id,
+              responseSnapshot: response,
+            });
+          }
+          logger.info('Inscrição pendente reutilizada', {
+            registrationId: decision.registration.id,
+            eventId: event.id,
+            categoryId: category.id,
+            outcome: 'REUSED_PENDING_REGISTRATION',
+            operation: 'public_registration_create',
+          });
+          return response;
+        }
+
+        return this.createNewRegistration(body, {
+          requestId,
+          event,
+          category,
+          totalPrice: totalPriceFromCents(category.priceCents),
+        });
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === 'REGISTRATION_CREATE_LOCK_TIMEOUT') {
+        throw AppError.conflict(
+          'Outra inscrição em andamento para este atleta. Tente novamente.',
+          'REGISTRATION_IN_PROGRESS',
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async createNewRegistration(
+    body: CreatePublicRegistrationBody,
+    ctx: {
+      requestId?: string;
+      event: PublicEventRecord;
+      category: PublicCategoryRecord;
+      totalPrice: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const { event, category, totalPrice, requestId } = ctx;
+
     // Valida responsável = Atleta 1
     const first = body.athletes[0]!;
     const responsible = body.responsible;
@@ -214,7 +318,6 @@ export class PublicRegistrationService {
       throw AppError.badRequest('Assinatura excede o tamanho máximo', 'SIGNATURE_TOO_LARGE');
     }
 
-    const totalPrice = totalPriceFromCents(category.priceCents);
     const format = category.format;
 
     // Equipe/dupla: cria team quando houver teamName
@@ -331,6 +434,7 @@ export class PublicRegistrationService {
       amount: totalPrice.toFixed(2),
       paymentRequired: true,
       registrationAccessToken: rawToken,
+      outcome: 'NEW_REGISTRATION' as const,
     };
 
     if (requestId) {
@@ -355,6 +459,7 @@ export class PublicRegistrationService {
       amount: response.amount,
       reservationId: reservation.id,
       isAthlete1Responsible,
+      outcome: 'NEW_REGISTRATION',
       operation: 'public_registration_create',
     });
 

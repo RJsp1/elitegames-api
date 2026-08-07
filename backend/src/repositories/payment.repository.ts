@@ -1144,6 +1144,21 @@ export class PaymentRepository {
     await this.confirmRegistration(input.registrationId);
     await this.confirmReservation(input.paymentId, input.registrationId);
     await this.markPaymentEventProcessed(input.eventId);
+
+    // Outras cobranças ACTIVE/PENDING da MESMA inscrição → cancelamento local (histórico preservado).
+    // Sem chamada Sicredi: não há endpoint de remoção implementado no projeto.
+    const siblings = await this.cancelSiblingOpenPayments({
+      registrationId: input.registrationId,
+      exceptPaymentId: input.paymentId,
+    });
+    if (siblings.cancelledPaymentIds.length > 0) {
+      logger.info('Cobranças irmãs canceladas localmente após paid', {
+        registrationId: input.registrationId,
+        paidPaymentId: input.paymentId,
+        cancelledPaymentIds: siblings.cancelledPaymentIds,
+        operation: 'cancel_sibling_open_payments',
+      });
+    }
   }
 
   async listPayments(limit = 50): Promise<PaymentRecord[]> {
@@ -1354,6 +1369,113 @@ export class PaymentRepository {
     if (error) throw AppError.internal(error.message);
     if (!data) return null;
     return mapAthleteRow(data as Record<string, unknown>);
+  }
+
+  /**
+   * Inscrições do mesmo evento+categoria ligadas a qualquer CPF informado,
+   * nos status que bloqueiam nova inscrição (draft/pending_payment/paid/confirmed).
+   */
+  async findBlockingRegistrationsForAthletes(input: {
+    eventId: string;
+    categoryId: string;
+    athleteCpfs: string[];
+    blockingStatuses?: RegistrationStatus[];
+  }): Promise<RegistrationRecord[]> {
+    const cpfs = [
+      ...new Set(input.athleteCpfs.map((c) => c.replace(/\D/g, '')).filter((c) => c.length > 0)),
+    ];
+    if (cpfs.length === 0) return [];
+
+    const statuses: RegistrationStatus[] = input.blockingStatuses ?? [
+      'draft',
+      'pending_payment',
+      'paid',
+      'confirmed',
+    ];
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      const athleteIds = new Set<string>();
+      for (const a of athletes.values()) {
+        if (cpfs.includes(a.cpf.replace(/\D/g, ''))) athleteIds.add(a.id);
+      }
+      if (athleteIds.size === 0) return [];
+      const regIds = new Set<string>();
+      for (const link of registrationAthletes.values()) {
+        if (athleteIds.has(link.athleteId)) regIds.add(link.registrationId);
+      }
+      return Array.from(registrations.values())
+        .filter(
+          (r) =>
+            regIds.has(r.id) &&
+            r.eventId === input.eventId &&
+            r.categoryId === input.categoryId &&
+            statuses.includes(r.status),
+        )
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    }
+
+    const { data: athleteRows, error: athErr } = await supabase
+      .from('athletes')
+      .select('id, cpf')
+      .in('cpf', cpfs);
+    if (athErr) throw AppError.internal(athErr.message);
+    const athleteIds = (athleteRows ?? []).map((r) => String((r as { id: string }).id));
+    if (athleteIds.length === 0) return [];
+
+    const { data: linkRows, error: linkErr } = await supabase
+      .from('registration_athletes')
+      .select('registration_id')
+      .in('athlete_id', athleteIds);
+    if (linkErr) throw AppError.internal(linkErr.message);
+    const regIds = [
+      ...new Set((linkRows ?? []).map((r) => String((r as { registration_id: string }).registration_id))),
+    ];
+    if (regIds.length === 0) return [];
+
+    const { data: regRows, error: regErr } = await supabase
+      .from('registrations')
+      .select('*')
+      .in('id', regIds)
+      .eq('event_id', input.eventId)
+      .eq('category_id', input.categoryId)
+      .in('status', statuses);
+    if (regErr) throw AppError.internal(regErr.message);
+
+    return (regRows ?? [])
+      .map((row) => mapRegistration(row as Record<string, unknown>))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /**
+   * Cancela localmente payments/charges abertos da inscrição, exceto o payment pago.
+   * Não altera status da registration (já deve estar paid). Não chama Sicredi.
+   */
+  async cancelSiblingOpenPayments(input: {
+    registrationId: string;
+    exceptPaymentId: string;
+  }): Promise<{ cancelledPaymentIds: string[] }> {
+    const list = await this.listPaymentsByRegistrationId(input.registrationId);
+    const cancelledPaymentIds: string[] = [];
+    for (const payment of list) {
+      if (payment.id === input.exceptPaymentId) continue;
+      if (payment.status === 'paid' || payment.status === 'cancelled' || payment.status === 'refunded') {
+        continue;
+      }
+      if (payment.status !== 'active' && payment.status !== 'pending') continue;
+
+      const charge =
+        (await this.findCurrentChargeByPaymentId(payment.id)) ??
+        (await this.listChargesByPaymentId(payment.id)).find(
+          (c) => c.status === 'active' || c.status === 'pending',
+        );
+      await this.updatePaymentStatus(payment.id, 'cancelled');
+      if (charge && charge.status !== 'paid' && charge.status !== 'cancelled') {
+        await this.updateChargeStatus(charge.id, 'cancelled', { isCurrent: false });
+      }
+      cancelledPaymentIds.push(payment.id);
+    }
+    return { cancelledPaymentIds };
   }
 
   async createAthlete(input: {
