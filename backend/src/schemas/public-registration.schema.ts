@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { normalizeCpfDigits } from '../utils/cpf.js';
 
-/** Limite alinhado ao frontend (assinatura data URL). */
-export const MAX_SIGNATURE_DATA_URL_LENGTH = 500_000;
+/** Limite alinhado ao frontend (assinatura data URL em mobile pode passar de 500kb). */
+export const MAX_SIGNATURE_DATA_URL_LENGTH = 1_500_000;
 
 const cpfSchema = z
   .string()
@@ -166,6 +166,7 @@ const createPublicRegistrationObjectSchema = z
       })
       .optional(),
     medicalNotes: z.string().max(2000).optional(),
+    couponCode: z.string().trim().min(2).max(40).optional(),
     waiver: waiverSchema.optional(),
     termsAccepted: z.literal(true),
     privacyAccepted: z.literal(true),

@@ -1809,6 +1809,7 @@ export class PaymentRepository {
     status?: RegistrationStatus;
     registrationNumber?: string;
     reservationId?: string | null;
+    couponId?: string | null;
   }): Promise<RegistrationRecord> {
     const now = nowIso();
     const record: RegistrationRecord = {
@@ -1846,6 +1847,7 @@ export class PaymentRepository {
       reservation_id: record.reservationId,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
+      ...(input.couponId ? { coupon_id: input.couponId } : {}),
     };
     const numericNumber = String(input.registrationNumber ?? '').trim();
     if (/^\d+$/.test(numericNumber)) {

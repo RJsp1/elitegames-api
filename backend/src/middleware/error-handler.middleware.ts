@@ -6,11 +6,16 @@ import { redactSensitiveData } from '../utils/redact-sensitive-data.js';
 
 export const errorHandlerMiddleware: ErrorRequestHandler = (err, req, res, _next) => {
   if (err instanceof ZodError) {
+    const flat = err.flatten();
+    const fieldMessages = Object.entries(flat.fieldErrors)
+      .flatMap(([path, msgs]) => (msgs ?? []).map((m) => `${path}: ${m}`));
+    const formMessages = flat.formErrors ?? [];
+    const firstDetail = [...formMessages, ...fieldMessages][0];
     res.status(400).json({
       error: {
         code: 'VALIDATION_ERROR',
-        message: 'Dados inválidos',
-        details: err.flatten(),
+        message: firstDetail ? `Dados inválidos — ${firstDetail}` : 'Dados inválidos',
+        details: flat,
         requestId: req.requestId,
       },
     });

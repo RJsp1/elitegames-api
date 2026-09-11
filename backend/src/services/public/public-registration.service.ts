@@ -10,6 +10,7 @@ import {
   paymentRepository,
 } from '../../repositories/payment.repository.js';
 import { registrationAccessTokenRepository } from '../../repositories/registration-access-token.repository.js';
+import { getSupabase } from '../../config/supabase.js';
 import { assertValidCpf, maskCpfDisplay, normalizeCpfDigits } from '../../utils/cpf.js';
 import { AppError } from '../../utils/app-error.js';
 import { centsToPixAmount } from '../../utils/money.js';
@@ -31,6 +32,93 @@ import {
 
 function moneyFromCents(cents: number): string {
   return centsToPixAmount(cents);
+}
+
+type PublicCouponRow = {
+  id: string;
+  code: string;
+  discount_type: 'percent' | 'fixed';
+  discount_value: number;
+};
+
+/** Valida cupom ativo no Supabase e devolve o total com desconto (em reais). */
+async function resolveTotalWithOptionalCoupon(opts: {
+  eventId: string;
+  priceCents: number;
+  couponCode?: string | null;
+}): Promise<{ totalPrice: number; coupon: PublicCouponRow | null }> {
+  const base = totalPriceFromCents(opts.priceCents);
+  const code = opts.couponCode?.trim().toUpperCase();
+  if (!code) return { totalPrice: base, coupon: null };
+
+  const supabase = getSupabase();
+  if (!supabase) {
+    throw AppError.badRequest('Cupom indisponível no momento', 'COUPON_UNAVAILABLE');
+  }
+
+  const { data, error } = await supabase
+    .from('coupons')
+    .select(
+      'id, code, discount_type, discount_value, is_active, starts_at, ends_at, max_uses, uses_count, event_id, deleted_at',
+    )
+    .eq('code', code)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (error) throw AppError.internal(error.message);
+  if (!data || data.is_active !== true) {
+    throw AppError.badRequest('Cupom inválido ou inativo', 'COUPON_INVALID');
+  }
+  if (data.event_id && String(data.event_id) !== opts.eventId) {
+    throw AppError.badRequest('Cupom não válido para este evento', 'COUPON_EVENT_MISMATCH');
+  }
+
+  const now = Date.now();
+  if (data.starts_at && new Date(String(data.starts_at)).getTime() > now) {
+    throw AppError.badRequest('Cupom ainda não está válido', 'COUPON_NOT_STARTED');
+  }
+  if (data.ends_at && new Date(String(data.ends_at)).getTime() < now) {
+    throw AppError.badRequest('Cupom expirado', 'COUPON_EXPIRED');
+  }
+  const maxUses = data.max_uses == null ? null : Number(data.max_uses);
+  const usesCount = Number(data.uses_count ?? 0);
+  if (maxUses != null && Number.isFinite(maxUses) && usesCount >= maxUses) {
+    throw AppError.badRequest('Cupom esgotado', 'COUPON_EXHAUSTED');
+  }
+
+  const discountType = data.discount_type === 'fixed' ? 'fixed' : 'percent';
+  const discountValue = Number(data.discount_value);
+  let discount =
+    discountType === 'percent'
+      ? Number(((base * discountValue) / 100).toFixed(2))
+      : Number(discountValue.toFixed(2));
+  discount = Math.min(Math.max(discount, 0), base);
+  const totalPrice = Number((base - discount).toFixed(2));
+
+  return {
+    totalPrice,
+    coupon: {
+      id: String(data.id),
+      code: String(data.code),
+      discount_type: discountType,
+      discount_value: discountValue,
+    },
+  };
+}
+
+async function bumpCouponUses(couponId: string): Promise<void> {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  const { data } = await supabase
+    .from('coupons')
+    .select('uses_count')
+    .eq('id', couponId)
+    .maybeSingle();
+  if (!data) return;
+  await supabase
+    .from('coupons')
+    .update({ uses_count: Number(data.uses_count ?? 0) + 1 })
+    .eq('id', couponId);
 }
 
 /**
@@ -264,11 +352,18 @@ export class PublicRegistrationService {
           return response;
         }
 
+        const priced = await resolveTotalWithOptionalCoupon({
+          eventId: event.id,
+          priceCents: category.priceCents,
+          couponCode: body.couponCode,
+        });
+
         return this.createNewRegistration(body, {
           requestId,
           event,
           category,
-          totalPrice: totalPriceFromCents(category.priceCents),
+          totalPrice: priced.totalPrice,
+          coupon: priced.coupon,
         });
       });
     } catch (err) {
@@ -289,9 +384,10 @@ export class PublicRegistrationService {
       event: PublicEventRecord;
       category: PublicCategoryRecord;
       totalPrice: number;
+      coupon: PublicCouponRow | null;
     },
   ): Promise<Record<string, unknown>> {
-    const { event, category, totalPrice, requestId } = ctx;
+    const { event, category, totalPrice, requestId, coupon } = ctx;
 
     // Valida responsável = Atleta 1
     const first = body.athletes[0]!;
@@ -428,8 +524,13 @@ export class PublicRegistrationService {
         totalPrice,
         teamId,
         status: 'draft',
+        couponId: coupon?.id ?? null,
       });
       registrationId = registration.id;
+
+      if (coupon) {
+        await bumpCouponUses(coupon.id);
+      }
 
       for (const row of prepared) {
         await paymentRepository.linkRegistrationAthlete({
