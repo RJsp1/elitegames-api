@@ -319,16 +319,58 @@ export class PublicRegistrationService {
         }
 
         if (decision?.kind === 'reusable') {
+          const priced = await resolveTotalWithOptionalCoupon({
+            eventId: event.id,
+            priceCents: category.priceCents,
+            couponCode: body.couponCode,
+          });
+
+          const previous = decision.registration;
+          const prevTotal = Number(Number(previous.totalPrice).toFixed(2));
+          const nextTotal = Number(Number(priced.totalPrice).toFixed(2));
+          const prevCouponId = previous.couponId ?? null;
+          const nextCouponId = priced.coupon?.id ?? null;
+          const pricingChanged = prevTotal !== nextTotal || prevCouponId !== nextCouponId;
+
+          let registration = previous;
+          if (pricingChanged) {
+            registration = await paymentRepository.updateRegistrationPricing(previous.id, {
+              totalPrice: nextTotal,
+              couponId: nextCouponId,
+            });
+
+            // PIX/cobrança aberta ficou com valor antigo → invalida para gerar novo.
+            const openPayments = await paymentRepository.listPaymentsByRegistrationId(
+              previous.id,
+            );
+            for (const payment of openPayments) {
+              if (payment.status === 'paid') continue;
+              if (payment.status === 'pending' || payment.status === 'active') {
+                await paymentRepository.expirePaymentBundle(payment);
+              }
+            }
+
+            if (nextCouponId && nextCouponId !== prevCouponId) {
+              await bumpCouponUses(nextCouponId);
+            }
+
+            // expirePaymentBundle pode voltar status para draft; mantém pending se já estava.
+            if (registration.status === 'draft' && previous.status === 'pending_payment') {
+              registration = await paymentRepository.updateRegistrationStatus(
+                previous.id,
+                'pending_payment',
+              );
+            }
+          }
+
           const { rawToken } = await registrationAccessTokenRepository.issueToken(
-            decision.registration.id,
+            registration.id,
           );
           const response = {
-            registrationId: decision.registration.id,
-            registrationNumber: toPublicRegistrationNumber(
-              decision.registration.registrationNumber,
-            ),
-            status: decision.registration.status,
-            amount: Number(decision.registration.totalPrice).toFixed(2),
+            registrationId: registration.id,
+            registrationNumber: toPublicRegistrationNumber(registration.registrationNumber),
+            status: registration.status,
+            amount: Number(registration.totalPrice).toFixed(2),
             paymentRequired: true,
             registrationAccessToken: rawToken,
             outcome: 'REUSED_PENDING_REGISTRATION' as const,
@@ -338,15 +380,17 @@ export class PublicRegistrationService {
               scope: 'public_registration_create',
               requestId,
               resourceType: 'registration',
-              resourceId: decision.registration.id,
+              resourceId: registration.id,
               responseSnapshot: response,
             });
           }
           logger.info('Inscrição pendente reutilizada', {
-            registrationId: decision.registration.id,
+            registrationId: registration.id,
             eventId: event.id,
             categoryId: category.id,
             outcome: 'REUSED_PENDING_REGISTRATION',
+            pricingChanged,
+            amount: response.amount,
             operation: 'public_registration_create',
           });
           return response;

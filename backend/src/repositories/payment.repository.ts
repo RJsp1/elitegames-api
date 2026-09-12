@@ -103,6 +103,7 @@ export function seedRegistrationForTest(
     registrationNumber: partial.registrationNumber ?? `INS-${partial.id.slice(0, 8)}`,
     format: partial.format ?? 'individual',
     totalPrice: partial.totalPrice,
+    couponId: partial.couponId ?? null,
     status: partial.status ?? 'draft',
     reservationId: partial.reservationId ?? null,
     createdAt: partial.createdAt ?? now,
@@ -231,6 +232,7 @@ function mapRegistration(row: Record<string, unknown>): RegistrationRecord {
     registrationNumber: String(row.registration_number),
     format: (row.format as string) ?? null,
     totalPrice: Number(row.total_price),
+    couponId: (row.coupon_id as string) ?? null,
     status: row.status as RegistrationStatus,
     reservationId: (row.reservation_id as string) ?? null,
     createdAt: String(row.created_at),
@@ -939,6 +941,40 @@ export class PaymentRepository {
       .update({ status, updated_at: now })
       .eq('id', registrationId)
       .select()
+      .single();
+    if (error) throw AppError.internal(error.message);
+    return mapRegistration(data as Record<string, unknown>);
+  }
+
+  /** Atualiza preço/cupom de inscrição pendente (ex.: reuso sem/com cupom). */
+  async updateRegistrationPricing(
+    registrationId: string,
+    input: { totalPrice: number; couponId: string | null },
+  ): Promise<RegistrationRecord> {
+    const now = nowIso();
+    const supabase = getSupabase();
+    if (!supabase) {
+      const existing = registrations.get(registrationId);
+      if (!existing) throw AppError.notFound('Inscrição não encontrada');
+      const updated = {
+        ...existing,
+        totalPrice: input.totalPrice,
+        couponId: input.couponId,
+        updatedAt: now,
+      };
+      registrations.set(registrationId, updated);
+      return updated;
+    }
+
+    const { data, error } = await supabase
+      .from('registrations')
+      .update({
+        total_price: input.totalPrice,
+        coupon_id: input.couponId,
+        updated_at: now,
+      })
+      .eq('id', registrationId)
+      .select('*')
       .single();
     if (error) throw AppError.internal(error.message);
     return mapRegistration(data as Record<string, unknown>);
@@ -1821,6 +1857,7 @@ export class PaymentRepository {
         input.registrationNumber ?? `INS-${Date.now().toString(36).toUpperCase()}`,
       format: input.format,
       totalPrice: input.totalPrice,
+      couponId: input.couponId ?? null,
       status: input.status ?? 'draft',
       reservationId: input.reservationId ?? null,
       createdAt: now,

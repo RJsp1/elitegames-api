@@ -32,16 +32,22 @@ export class PublicPaymentService {
     registrationId: string,
     opts?: { requestId?: string },
   ): Promise<Record<string, unknown>> {
+    const registration = await paymentRepository.findRegistrationById(registrationId);
+    if (!registration) throw AppError.notFound('Inscrição não encontrada');
+
+    const expectedAmount = Number(registration.totalPrice).toFixed(2);
+
     if (opts?.requestId) {
       const existing = await registrationAccessTokenRepository.findIdempotent(
         'public_payment_create',
         opts.requestId,
       );
-      if (existing?.responseSnapshot) return existing.responseSnapshot;
+      const snap = existing?.responseSnapshot as Record<string, unknown> | undefined;
+      // Ignora snapshot se o preço da inscrição mudou (ex.: cupom aplicado/removido).
+      if (snap && String(snap.amount ?? '') === expectedAmount) {
+        return snap;
+      }
     }
-
-    const registration = await paymentRepository.findRegistrationById(registrationId);
-    if (!registration) throw AppError.notFound('Inscrição não encontrada');
 
     const registrationNumber = toPublicRegistrationNumber(registration.registrationNumber);
 
@@ -81,24 +87,29 @@ export class PublicPaymentService {
       );
     }
 
-    // Case B: cobrança ACTIVE não expirada → reutilizar (não criar segundo PIX).
+    // Case B: cobrança ACTIVE não expirada → reutilizar só se o valor bater com a inscrição.
     const openCharge = await paymentService.findOpenCurrentChargeForRegistration(registrationId);
     if (openCharge) {
       const payment = existingPayments.find((p) => p.id === openCharge.paymentId);
       if (payment) {
-        const response = paymentPublicPayload(payment, openCharge, registrationNumber, {
-          outcome: 'REUSED_ACTIVE_CHARGE',
-        });
-        if (opts?.requestId) {
-          await registrationAccessTokenRepository.saveIdempotent({
-            scope: 'public_payment_create',
-            requestId: opts.requestId,
-            resourceType: 'payment',
-            resourceId: payment.id,
-            responseSnapshot: response,
+        const chargeAmount = Number(payment.totalAmount).toFixed(2);
+        if (chargeAmount === expectedAmount) {
+          const response = paymentPublicPayload(payment, openCharge, registrationNumber, {
+            outcome: 'REUSED_ACTIVE_CHARGE',
           });
+          if (opts?.requestId) {
+            await registrationAccessTokenRepository.saveIdempotent({
+              scope: 'public_payment_create',
+              requestId: opts.requestId,
+              resourceType: 'payment',
+              resourceId: payment.id,
+              responseSnapshot: response,
+            });
+          }
+          return response;
         }
-        return response;
+        // Valor desatualizado (cupom mudou) → invalida e cria nova cobrança.
+        await paymentRepository.expirePaymentBundle(payment);
       }
     }
 

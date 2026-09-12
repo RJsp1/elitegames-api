@@ -102,6 +102,7 @@ export interface RegistrationRecord {
   registrationNumber: string;
   format: string | null;
   totalPrice: number;
+  couponId?: string | null;
   status: RegistrationStatus;
   reservationId: string | null;
   createdAt: string;
