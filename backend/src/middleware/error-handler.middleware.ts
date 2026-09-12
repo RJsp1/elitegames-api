@@ -7,9 +7,11 @@ import { redactSensitiveData } from '../utils/redact-sensitive-data.js';
 export const errorHandlerMiddleware: ErrorRequestHandler = (err, req, res, _next) => {
   if (err instanceof ZodError) {
     const flat = err.flatten();
-    const fieldMessages = Object.entries(flat.fieldErrors)
-      .flatMap(([path, msgs]) => (msgs ?? []).map((m) => `${path}: ${m}`));
-    const formMessages = flat.formErrors ?? [];
+    const fieldErrors = flat.fieldErrors as Record<string, string[] | undefined>;
+    const fieldMessages = Object.entries(fieldErrors).flatMap(([path, msgs]) =>
+      (msgs ?? []).map((m: string) => `${path}: ${m}`),
+    );
+    const formMessages = (flat.formErrors ?? []) as string[];
     const firstDetail = [...formMessages, ...fieldMessages][0];
     res.status(400).json({
       error: {
