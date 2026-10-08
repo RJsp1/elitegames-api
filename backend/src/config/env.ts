@@ -66,6 +66,24 @@ const baseSchema = z.object({
   PAYMENT_EXPIRATION_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   PAYMENT_EXPIRATION_BATCH_SIZE: z.coerce.number().int().positive().max(200).default(50),
   PAYMENT_EXPIRATION_CONCURRENCY: z.coerce.number().int().positive().max(20).default(5),
+
+  // Cartão de crédito via Asaas. Independente do PIX: sem chave, o cartão só fica indisponível.
+  ASAAS_ENABLED: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
+  ASAAS_API_KEY: z.string().optional().default(''),
+  ASAAS_BASE_URL: z.string().url().default('https://api-sandbox.asaas.com/v3'),
+  ASAAS_WEBHOOK_TOKEN: z.string().optional().default(''),
+  ASAAS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+  ASAAS_CARD_MAX_INSTALLMENTS: z.coerce.number().int().min(1).max(21).default(12),
+  ASAAS_CARD_MIN_INSTALLMENT_VALUE: z.coerce.number().nonnegative().default(5),
+  ASAAS_CARD_FEE_FIXED: z.coerce.number().nonnegative().default(0.49),
+  ASAAS_CARD_FEE_PCT_1X: z.coerce.number().nonnegative().max(50).default(2.99),
+  ASAAS_CARD_FEE_PCT_2_6: z.coerce.number().nonnegative().max(50).default(3.49),
+  ASAAS_CARD_FEE_PCT_7_12: z.coerce.number().nonnegative().max(50).default(3.99),
+  ASAAS_CARD_FEE_PCT_13_21: z.coerce.number().nonnegative().max(50).default(4.29),
 });
 
 export type Env = z.infer<typeof baseSchema> & {

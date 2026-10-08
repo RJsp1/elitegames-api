@@ -59,6 +59,8 @@ export type FinancialAuditOrigin =
   | 'expiration_worker'
   | 'payment_create'
   | 'payment_reissue'
+  | 'card_create'
+  | 'webhook_asaas'
   | 'system';
 
 export interface AuditLogRecord {

@@ -382,12 +382,19 @@ export class PaymentService {
         if (!payment || payment.registrationId !== registration.id) {
           throw AppError.notFound('Pagamento não encontrado para a inscrição');
         }
+        if (payment.paymentMethod !== 'pix') {
+          throw AppError.badRequest(
+            'Pagamento com cartão não pode ser reemitido como PIX',
+            'PAYMENT_METHOD_NOT_PIX',
+          );
+        }
       } else {
+        const pixPayments = paymentsForReg.filter((p) => p.paymentMethod === 'pix');
         payment =
-          paymentsForReg.find((p) =>
+          pixPayments.find((p) =>
             ['expired', 'cancelled', 'failed'].includes(p.status),
           ) ??
-          paymentsForReg[0] ??
+          pixPayments[0] ??
           null;
       }
 
@@ -598,6 +605,12 @@ export class PaymentService {
     if (!payment) throw AppError.notFound('Pagamento não encontrado');
     if (payment.status !== 'paid') {
       throw AppError.badRequest('Somente pagamentos paid podem ser estornados', 'INVALID_STATUS');
+    }
+    if (payment.paymentMethod !== 'pix') {
+      throw AppError.badRequest(
+        'Estorno de cartão deve ser feito no painel do Asaas',
+        'PAYMENT_METHOD_NOT_PIX',
+      );
     }
     if (!payment.endToEndId) {
       throw AppError.badRequest('Pagamento sem endToEndId', 'MISSING_E2E');

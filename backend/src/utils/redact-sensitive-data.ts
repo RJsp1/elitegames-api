@@ -18,6 +18,11 @@ const SENSITIVE_KEYS = new Set([
   'cert',
   'key',
   'ca',
+  'creditcard',
+  'creditcardtoken',
+  'ccv',
+  'cvv',
+  'cardnumber',
 ]);
 
 function maskValue(key: string, value: string): string {

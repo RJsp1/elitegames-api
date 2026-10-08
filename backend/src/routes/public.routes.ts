@@ -9,6 +9,7 @@ import {
   registrationAccessMiddleware,
 } from '../middleware/registration-access.middleware.js';
 import { publicRegistrationController } from '../controllers/public-registration.controller.js';
+import { cardPaymentController } from '../controllers/card-payment.controller.js';
 
 const router = Router();
 
@@ -63,6 +64,26 @@ router.post(
   publicWriteRateLimit,
   registrationAccessMiddleware,
   asyncHandler(async (req, res) => publicRegistrationController.reissuePayment(req, res)),
+);
+
+router.get(
+  '/card/config',
+  publicRateLimit,
+  asyncHandler(async (req, res) => cardPaymentController.getConfig(req, res)),
+);
+
+router.get(
+  '/registrations/:registrationId/card-quote',
+  publicRateLimit,
+  registrationAccessMiddleware,
+  asyncHandler(async (req, res) => cardPaymentController.getQuote(req, res)),
+);
+
+router.post(
+  '/registrations/:registrationId/card-payment',
+  publicWriteRateLimit,
+  registrationAccessMiddleware,
+  asyncHandler(async (req, res) => cardPaymentController.createCardPayment(req, res)),
 );
 
 export default router;

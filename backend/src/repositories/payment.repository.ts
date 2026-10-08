@@ -84,8 +84,20 @@ function seedMockProvider(): void {
     supportsWebhook: true,
     defaultExpirationSeconds: 1800,
   };
+  const asaas: PaymentProviderRecord = {
+    id: randomUUID(),
+    name: 'Asaas Cartão',
+    code: 'asaas',
+    environment: 'sandbox',
+    isActive: true,
+    isDefault: false,
+    supportsDynamicCharge: true,
+    supportsWebhook: true,
+    defaultExpirationSeconds: null,
+  };
   providers.set(mock.id, mock);
   providers.set(sicredi.id, sicredi);
+  providers.set(asaas.id, asaas);
 }
 
 seedMockProvider();
@@ -605,6 +617,26 @@ export class PaymentRepository {
     }
 
     const { data, error } = await supabase.from('payments').select('*').eq('txid', txid).maybeSingle();
+    if (error) throw AppError.internal(error.message);
+    return data ? mapPayment(data as Record<string, unknown>) : null;
+  }
+
+  async findPaymentByProviderChargeId(providerChargeId: string): Promise<PaymentRecord | null> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      for (const p of payments.values()) {
+        if (p.providerChargeId === providerChargeId) return p;
+      }
+      return null;
+    }
+
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('provider_charge_id', providerChargeId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
     if (error) throw AppError.internal(error.message);
     return data ? mapPayment(data as Record<string, unknown>) : null;
   }
