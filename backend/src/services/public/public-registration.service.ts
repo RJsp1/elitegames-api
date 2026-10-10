@@ -225,13 +225,8 @@ export class PublicRegistrationService {
   ): Promise<Record<string, unknown>> {
     const requestId = opts?.requestId ?? body.requestId;
     if (requestId) {
-      const existing = await registrationAccessTokenRepository.findIdempotent(
-        'public_registration_create',
-        requestId,
-      );
-      if (existing?.responseSnapshot) {
-        return existing.responseSnapshot;
-      }
+      const snapshot = await this.findUsableCreateSnapshot(requestId);
+      if (snapshot) return snapshot;
     }
 
     const event = await catalogRepository.findEventById(body.eventId);
@@ -279,11 +274,8 @@ export class PublicRegistrationService {
       return await withRegistrationCreateLock(lockKey, async () => {
         // Re-check idempotency inside lock (concurrent same requestId).
         if (requestId) {
-          const again = await registrationAccessTokenRepository.findIdempotent(
-            'public_registration_create',
-            requestId,
-          );
-          if (again?.responseSnapshot) return again.responseSnapshot;
+          const again = await this.findUsableCreateSnapshot(requestId);
+          if (again) return again;
         }
 
         const blockingRaw = await paymentRepository.findBlockingRegistrationsForAthletes({
@@ -419,6 +411,44 @@ export class PublicRegistrationService {
       }
       throw err;
     }
+  }
+
+  /**
+   * O requestId do site é estável por atleta+categoria+cupom, então o snapshot pode ter
+   * dias: só vale enquanto o token ainda é válido e a inscrição ainda aceita pagamento.
+   */
+  private async findUsableCreateSnapshot(
+    requestId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const scope = 'public_registration_create';
+    const existing = await registrationAccessTokenRepository.findIdempotent(scope, requestId);
+    const snapshot = existing?.responseSnapshot;
+    if (!snapshot) return null;
+
+    const rawToken =
+      typeof snapshot.registrationAccessToken === 'string' ? snapshot.registrationAccessToken : '';
+    const token = rawToken
+      ? await registrationAccessTokenRepository.findValidByRawToken(rawToken)
+      : null;
+    const tokenValid = token != null;
+    const registration = token
+      ? await paymentRepository.findRegistrationById(token.registrationId)
+      : null;
+    if (
+      registration &&
+      (registration.status === 'draft' || registration.status === 'pending_payment')
+    ) {
+      return snapshot;
+    }
+
+    await registrationAccessTokenRepository.deleteIdempotent(scope, requestId);
+    logger.info('Snapshot de idempotência obsoleto descartado', {
+      registrationId: existing?.resourceId,
+      registrationStatus: registration?.status ?? null,
+      tokenValid,
+      operation: 'public_registration_create',
+    });
+    return null;
   }
 
   private async createNewRegistration(

@@ -136,6 +136,21 @@ export class RegistrationAccessTokenRepository {
     };
   }
 
+  async deleteIdempotent(scope: string, requestId: string): Promise<void> {
+    const supabase = getSupabase();
+    if (!supabase) {
+      idempotency.delete(idemKey(scope, requestId));
+      return;
+    }
+
+    const { error } = await supabase
+      .from('public_idempotency_keys')
+      .delete()
+      .eq('scope', scope)
+      .eq('request_id', requestId);
+    if (error) throw AppError.internal(error.message);
+  }
+
   async saveIdempotent(input: {
     scope: string;
     requestId: string;

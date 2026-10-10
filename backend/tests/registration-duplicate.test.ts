@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { resetEnvCache, loadEnv } from '../src/config/env.js';
@@ -414,6 +414,49 @@ describe('Anti-duplicidade inscrição + PIX', () => {
     const outcomes = [a.body.outcome, b.body.outcome];
     expect(outcomes).toContain('NEW_REGISTRATION');
     expect(outcomes).toContain('REUSED_PENDING_REGISTRATION');
+  });
+
+  it('13) mesmo requestId após inscrição cancelada → nova inscrição com token válido', async () => {
+    const rid = `stale-cancel-${randomUUID()}`;
+    const first = await postRegistration({ requestId: rid });
+    expect(first.status).toBe(201);
+    await paymentRepository.updateRegistrationStatus(first.body.registrationId, 'cancelled');
+
+    const second = await postRegistration({ requestId: rid });
+    expect(second.status).toBe(201);
+    expect(second.body.registrationId).not.toBe(first.body.registrationId);
+    expect(second.body.outcome).toBe('NEW_REGISTRATION');
+
+    const pay = await postPayment(
+      second.body.registrationId,
+      second.body.registrationAccessToken,
+      `stale-cancel-pay-${randomUUID()}`,
+    );
+    expect(pay.status).toBe(201);
+  });
+
+  it('14) mesmo requestId com token expirado → reutiliza inscrição com token novo', async () => {
+    const rid = `stale-token-${randomUUID()}`;
+    const first = await postRegistration({ requestId: rid });
+    expect(first.status).toBe(201);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
+      const second = await postRegistration({ requestId: rid });
+      expect(second.status).toBe(201);
+      expect(second.body.registrationId).toBe(first.body.registrationId);
+      expect(second.body.registrationAccessToken).not.toBe(first.body.registrationAccessToken);
+
+      const pay = await postPayment(
+        second.body.registrationId,
+        second.body.registrationAccessToken,
+        `stale-token-pay-${randomUUID()}`,
+      );
+      expect(pay.status).toBe(201);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('12) nenhum fluxo usa manual_pix', async () => {
