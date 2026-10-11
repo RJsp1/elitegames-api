@@ -17,7 +17,13 @@ export const errorHandlerMiddleware: ErrorRequestHandler = (err, req, res, _next
       error: {
         code: 'VALIDATION_ERROR',
         message: firstDetail ? `Dados inválidos — ${firstDetail}` : 'Dados inválidos',
-        details: flat,
+        details: {
+          ...flat,
+          issues: err.issues.map((issue) => ({
+            path: issue.path.map(String).join('.'),
+            message: issue.message,
+          })),
+        },
         requestId: req.requestId,
       },
     });
